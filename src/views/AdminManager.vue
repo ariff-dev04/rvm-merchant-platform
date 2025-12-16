@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { Trash2, UserPlus, Shield } from 'lucide-vue-next';
+import { supabase } from '../services/supabase'; // Import Supabase
 
-// Simple type for local use
 interface AdminUser {
   id: string;
   email: string;
@@ -10,33 +10,68 @@ interface AdminUser {
   created_at: string;
 }
 
-// Mock Data (Replace with supabase call later)
-const admins = ref<AdminUser[]>([
-  { id: '1', email: 'you@example.com', role: 'SUPER_ADMIN', created_at: new Date().toISOString() },
-  { id: '2', email: 'staff@example.com', role: 'VIEWER', created_at: new Date().toISOString() }
-]);
-
+const admins = ref<AdminUser[]>([]);
 const newEmail = ref('');
 const newRole = ref('VIEWER');
 const showAddModal = ref(false);
+const loading = ref(true);
 
-const addAdmin = () => {
-  // Logic to insert into Supabase 'app_admins' table
-  admins.value.push({
-    id: Date.now().toString(),
-    email: newEmail.value,
-    role: newRole.value as any,
-    created_at: new Date().toISOString()
-  });
-  newEmail.value = '';
-  showAddModal.value = false;
+// 1. Fetch Real Data from Supabase
+async function fetchAdmins() {
+  loading.value = true;
+  const { data, error } = await supabase
+    .from('app_admins')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching admins:', error);
+  } else {
+    admins.value = data as AdminUser[];
+  }
+  loading.value = false;
+}
+
+// 2. Add New Admin to Supabase
+const addAdmin = async () => {
+  if (!newEmail.value) return;
+
+  const { data, error } = await supabase
+    .from('app_admins')
+    .insert([
+      { email: newEmail.value, role: newRole.value }
+    ])
+    .select();
+
+  if (error) {
+    alert('Failed to add admin: ' + error.message);
+  } else if (data) {
+    admins.value.unshift(data[0] as AdminUser); // Add to list immediately
+    newEmail.value = '';
+    showAddModal.value = false;
+  }
 };
 
-const removeAdmin = (id: string) => {
-  if(confirm('Revoke access for this admin?')) {
+// 3. Remove Admin from Supabase
+const removeAdmin = async (id: string) => {
+  if (!confirm('Revoke access for this admin?')) return;
+
+  const { error } = await supabase
+    .from('app_admins')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    alert('Error removing admin');
+  } else {
     admins.value = admins.value.filter(a => a.id !== id);
   }
 };
+
+// Load data when page opens
+onMounted(() => {
+  fetchAdmins();
+});
 </script>
 
 <template>
