@@ -22,6 +22,11 @@ const router = createRouter({
       component: Dashboard
     },
     {
+      path: '/submissions',
+      name: 'submissions',
+      component: () => import('../views/Submissions.vue')
+    },
+    {
       path: '/withdrawals',
       name: 'withdrawals',
       component: Withdrawals
@@ -41,7 +46,14 @@ const router = createRouter({
       name: 'machines',
       component: MachineStatus
     },
-    { path: '/admins', component: AdminManager },
+    { path: '/admins', 
+      component: AdminManager },
+
+    {
+      path: '/cleaning-logs',
+      name: 'CleaningLogs',
+      component: () => import('../views/CleaningLogs.vue')
+    }   
   ]
 })
 

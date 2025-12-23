@@ -5,41 +5,82 @@ import { useRouter } from 'vue-router';
 import type { User, Session } from '@supabase/supabase-js';
 
 export const useAuthStore = defineStore('auth', () => {
-  // FIX: Explicitly define types so they can hold data later
   const user = ref<User | null>(null);
   const session = ref<Session | null>(null);
   const loading = ref(true);
   const router = useRouter();
 
+  // 1. Initialize: Check if user is logged in
   async function initializeAuth() {
     loading.value = true;
     const { data } = await supabase.auth.getSession();
-    session.value = data.session;
-    user.value = data.session?.user || null;
+    
+    if (data.session) {
+      // Validate if they are still an admin
+      const isAdmin = await checkIsAdmin(data.session.user.email!);
+      if (isAdmin) {
+        session.value = data.session;
+        user.value = data.session.user;
+      } else {
+        await logout(); // Kick them out if they were removed from admin table
+      }
+    }
     loading.value = false;
-
-    supabase.auth.onAuthStateChange((_event, _session) => {
-      session.value = _session;
-      user.value = _session?.user || null;
-    });
   }
 
-  async function login(email: string) {
-    // FIX: Use the variable so TypeScript is happy
-    console.log("Attempting login for:", email);
+  // 2. Helper: Check Whitelist
+  async function checkIsAdmin(email: string): Promise<boolean> {
+    const { data, error } = await supabase
+      .from('app_admins')
+      .select('role')
+      .eq('email', email)
+      .single();
     
-    // For now, return true to simulate success
-    return true; 
+    return !error && !!data;
+  }
+
+  // 3. Login (Existing Users)
+  async function login(email: string, password: string) {
+    // A. Check Whitelist First
+    const isAdmin = await checkIsAdmin(email);
+    if (!isAdmin) throw new Error("Access Denied: You are not an administrator.");
+
+    // B. Perform Login
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+
+    session.value = data.session;
+    user.value = data.user;
+    router.push('/');
+  }
+
+  // 4. Register (For First Time Admins)
+  async function register(email: string, password: string) {
+    // A. Check Whitelist First
+    const isAdmin = await checkIsAdmin(email);
+    if (!isAdmin) throw new Error("Access Denied: Your email has not been invited by a Super Admin.");
+
+    // B. Create Account
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) throw error;
+    
+    // Auto login after signup
+    if (data.session) {
+      session.value = data.session;
+      user.value = data.user;
+      router.push('/');
+    } else {
+        // Sometimes Supabase requires email verification, depending on settings
+        alert("Account created! Please check your email to confirm.");
+    }
   }
 
   async function logout() {
     await supabase.auth.signOut();
     user.value = null;
     session.value = null;
-    
-    // FIX: Use the router variable we declared
-    router.push('/login'); 
+    router.push('/login');
   }
 
-  return { user, session, loading, initializeAuth, login, logout };
+  return { user, session, loading, initializeAuth, login, register, logout };
 });

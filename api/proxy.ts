@@ -58,7 +58,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       method: method,
       headers: headers,
       params: params,
-      data: body
+      data: body,
+      timeout: 8000
     });
 
     res.status(200).json(response.data);

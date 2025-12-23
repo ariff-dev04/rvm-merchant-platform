@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { Trash2, UserPlus, Shield } from 'lucide-vue-next';
-import { supabase } from '../services/supabase'; // Import Supabase
+import { supabase } from '../services/supabase';
 
 interface AdminUser {
   id: string;
@@ -82,7 +82,7 @@ onMounted(() => {
            <Shield class="mr-3 text-blue-600" :size="28" />
            Admin Access
          </h1>
-         <p class="text-gray-500 mt-1">Manage who can access this dashboard</p>
+         <p class="text-gray-500 mt-1">Manage who is allowed to login to this dashboard.</p>
       </div>
       <button 
         @click="showAddModal = !showAddModal"
@@ -94,7 +94,12 @@ onMounted(() => {
     </div>
 
     <div v-if="showAddModal" class="bg-blue-50 p-6 rounded-xl border border-blue-100 animate-fade-in-down">
-      <h3 class="text-sm font-bold text-blue-800 mb-4">Invite New Administrator</h3>
+      <h3 class="text-sm font-bold text-blue-800 mb-2">Whitelist New Administrator</h3>
+      <p class="text-xs text-blue-600 mb-4">
+        1. Add their email here. <br>
+        2. Tell them to go to the Login page and click <strong>"First Time Activation"</strong> to set their password.
+      </p>
+      
       <div class="flex gap-4 items-end">
         <div class="flex-1">
           <label class="block text-xs font-medium text-blue-800 mb-1">Email Address</label>
@@ -109,7 +114,7 @@ onMounted(() => {
           </select>
         </div>
         <button @click="addAdmin" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
-          Send Invite
+          Add to Whitelist
         </button>
       </div>
     </div>

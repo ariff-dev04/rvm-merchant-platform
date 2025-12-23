@@ -7,12 +7,21 @@ export const WithdrawalStatus = {
 
 export type WithdrawalStatus = typeof WithdrawalStatus[keyof typeof WithdrawalStatus];
 
+// ✅ UPDATED: Added new DB columns (nickname, avatar, card, sync time)
 export interface User {
   id: string;
-  vendor_user_no: string;
+  vendor_user_no?: string | null; // Made optional as it might be null initially
   phone: string;
   lifetime_integral: number;
   created_at: string;
+  total_weight?: number;
+  
+  // New fields for Hybrid Sync
+  nickname?: string | null;
+  avatar_url?: string | null;
+  card_no?: string | null;
+  vendor_internal_id?: string | null;
+  last_synced_at?: string | null;
 }
 
 export interface Withdrawal {
@@ -29,28 +38,40 @@ export interface Machine {
   deviceNo: string;
   deviceName?: string;
   address: string;
-  isOnline: number;
-  status: number;
+  isOnline: number; // 0: Offline, 1: Online
+  status: number;   // 0: Idle, 1: In Use, 2: Disabled, 3: Error
 }
 
+// ✅ UPDATED: Matches PDF Source [410]
 export interface ApiUserSyncResponse {
   code: number;
+  msg: string;
   data: {
-    userNo: string;
-    integral: number;
+    userNo: string;       // Maps to vendor_user_no
+    integral: number;     // Maps to lifetime_integral
     phone: string;
-    isNewUser: number;
+    nikeName?: string;    // Note the API typo "nikeName" 
+    imgUrl?: string;      // Maps to avatar_url
+    createTime?: string;
+    isNewUser?: number;
   };
 }
 
+// ✅ UPDATED: Matches PDF Source [95]
 export interface ApiDisposalRecord {
   id: string;
   deviceNo: string;
+  deviceName?: string;
   weight: number;
   integral: number;
-  rubbishName: string;
+  rubbishName?: string; // Sometimes nested in rubbishLogDetailsVOList
   createTime: string;
   imgUrl?: string;
+  
+  // Critical for fetching the Card Number
+  cardNo?: string;      // 
+  username?: string;
+  userId?: string;    // 
 }
 
 export interface ApiPutResponse {
@@ -58,5 +79,40 @@ export interface ApiPutResponse {
   data: {
     list: ApiDisposalRecord[];
     total: number;
+    pageNum: number;
+    pageSize: number;
+  };
+}
+
+export type SubmissionStatus = 'PENDING' | 'VERIFIED' | 'REJECTED';
+
+export interface SubmissionReview {
+  id: string;
+  vendor_record_id: string;
+  user_id: string;
+  phone: string;
+  device_no: string;
+  waste_type: string;
+  photo_url: string;
+  
+  // Weights
+  api_weight: number;
+  theoretical_weight: number;
+  warehouse_weight?: number;
+  confirmed_weight?: number;
+  bin_weight_snapshot?: number;
+  machine_given_points?: number;
+  
+  // Financials
+  rate_per_kg: number;
+  calculated_points?: number;
+  
+  status: SubmissionStatus;
+  submitted_at: string;
+  
+  // Join fields (from Supabase)
+  users?: {
+    nickname: string;
+    avatar_url: string;
   };
 }

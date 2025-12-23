@@ -1,14 +1,14 @@
 import axios from "axios";
-import type { Machine, ApiUserSyncResponse } from "../types";
+import type { Machine } from "../types";
 
 // 1. Define Proxy URL
-// If Localhost: Use Live Vercel Backend
-// If Production: Use relative path
+// If Localhost: Use Live Vercel Backend to avoid CORS issues
+// If Production: Use relative path '/api/proxy'
 const LIVE_BACKEND = 'https://rvm-admin-xi.vercel.app'; 
 const PROXY_URL = import.meta.env.DEV ? `${LIVE_BACKEND}/api/proxy` : '/api/proxy';
 
-// 2. Generic Wrapper
-async function callApi(endpoint: string, method: 'GET' | 'POST' = 'GET', data: any = {}) {
+// ✅ FIXED: Changed return type from Promise<any> to Promise<T>
+async function callApi<T>(endpoint: string, method: 'GET' | 'POST' = 'GET', data: any = {}): Promise<T> {
   try {
     const payload = {
       endpoint,
@@ -17,7 +17,7 @@ async function callApi(endpoint: string, method: 'GET' | 'POST' = 'GET', data: a
     };
     
     const res = await axios.post(PROXY_URL, payload);
-    return res.data; 
+    return res.data as T; // Explicitly cast the result to T
   } catch (error: any) {
     console.error(`❌ API Error [${endpoint}]:`, error.message);
     throw error;
@@ -25,23 +25,15 @@ async function callApi(endpoint: string, method: 'GET' | 'POST' = 'GET', data: a
 }
 
 // ✅ 3. Get Nearby RVMs
+// Used to find machines near a coordinate (GPS-based)
 export async function getNearbyRVMs(latitude: number = 3.14, longitude: number = 101.68): Promise<Machine[]> {
   try {
-    // Note: The API path must match exactly what the vendor expects
-    const res = await callApi('/api/open/video/v2/nearby', 'GET', { latitude, longitude });
+    const res = await callApi<any>('/api/open/video/v2/nearby', 'GET', { latitude, longitude });
     
-    // Check for success code 200
     if (res && res.code === 200 && Array.isArray(res.data)) {
       return res.data;
     }
-    
-    console.warn("⚠️ Vendor returned code:", res?.code, res?.msg);
-    console.warn("Using fallback data for display.");
-    
-    return [
-      { id: 'm1', deviceNo: '040201000001', deviceName: 'KLCC Mall Unit', address: 'Suria KLCC, Kuala Lumpur', isOnline: 1, status: 1 },
-      { id: 'm2', deviceNo: '040201000002', deviceName: 'Pavilion Entrance', address: 'Pavilion, Bukit Bintang', isOnline: 1, status: 0 },
-    ];
+    return [];
   } catch (error) {
     console.error("Failed to fetch machine list", error);
     return [];
@@ -49,21 +41,56 @@ export async function getNearbyRVMs(latitude: number = 3.14, longitude: number =
 }
 
 // ✅ 4. Sync User / Get User Info
-export async function syncUserAccount(phone: string): Promise<ApiUserSyncResponse> {
+// Used to get the user's "Lifetime Points" (integral) directly from the machine network
+export async function syncUserAccount(phone: string): Promise<any> {
   try {
-    const res = await callApi('/api/open/v1/user/account/sync', 'POST', { 
+    const res = await callApi<any>('/api/open/v1/user/account/sync', 'POST', { 
         phone,
-        nikeName: "", // API requires this typo 'nikeName'
+        nikeName: "", // The API actually requires this typo 'nikeName'
         avatarUrl: ""
     });
     
+    // We return res.data directly so components can access .integral immediately
     if (res && res.code === 200 && res.data) {
-      return res as unknown as ApiUserSyncResponse;
+      return res.data; 
     }
     
     throw new Error(res.msg || "Invalid response from API");
   } catch (error) {
     console.error("Failed to sync user account", error);
     throw error;
+  }
+}
+
+// ✅ 5. Get Individual Machine Status
+// Used by the Store to check status one-by-one (Sequential Fetch)
+export async function getMachineConfig(deviceNo: string): Promise<any> {
+  try {
+    const res = await callApi<any>('/api/open/v1/device/position', 'GET', { deviceNo });
+    return res;
+  } catch (error) {
+    console.error(`Failed to fetch config for ${deviceNo}`, error);
+    return null;
+  }
+}
+
+// ✅ 6. Get User Disposal Records
+// Used in User Details to show Recycling History
+export async function getUserRecords(phone: string, pageNum = 1, pageSize = 20): Promise<any[]> {
+  try {
+    const res = await callApi<any>('/api/open/v1/put', 'GET', { 
+        phone, 
+        pageNum, 
+        pageSize 
+    });
+    
+    // The API wraps the list inside data.list
+    if (res && res.code === 200 && res.data && Array.isArray(res.data.list)) {
+      return res.data.list;
+    }
+    return [];
+  } catch (error) {
+    console.error("Failed to fetch user recycling records", error);
+    return [];
   }
 }

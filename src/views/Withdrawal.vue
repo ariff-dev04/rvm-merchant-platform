@@ -1,16 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { supabaseService, hardwareApiService } from '../services/api';
-import type { Withdrawal } from '../types'; // Fix: type-only
+import { supabase } from '../services/supabase'; // Use Real DB
+import { syncUserAccount } from '../services/autogcm'; // Use Real Proxy
+import type { Withdrawal } from '../types';
 import { WithdrawalStatus } from '../types'; 
 import { 
-  CheckCircle2, 
-  XCircle, 
-  RefreshCcw, 
-  AlertTriangle,
-  ArrowUpRight,
-  Database,
-  CloudLightning
+  CheckCircle2, XCircle, RefreshCcw, AlertTriangle,
+  ArrowUpRight, CloudLightning, Database
 } from 'lucide-vue-next';
 
 interface BalanceCheckResult {
@@ -24,41 +20,67 @@ const withdrawals = ref<Withdrawal[]>([]);
 const checkingBalanceId = ref<string | null>(null);
 const balanceResult = ref<BalanceCheckResult | null>(null);
 
+// 1. Load from Real Database
 const loadWithdrawals = async () => {
   try {
-    const data = await supabaseService.getWithdrawals();
-    withdrawals.value = data.sort((a, b) => 
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
+    const { data, error } = await supabase
+      .from('withdrawals')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    withdrawals.value = data as Withdrawal[];
   } catch (error) {
     console.error("Failed to load withdrawals", error);
   }
 };
 
+// 2. Update Real Database
 const handleStatusChange = async (id: string, newStatus: WithdrawalStatus) => {
+  if(!confirm(`Mark this request as ${newStatus}?`)) return;
+
   try {
-    await supabaseService.updateWithdrawalStatus(id, newStatus);
+    const { error } = await supabase
+      .from('withdrawals')
+      .update({ status: newStatus })
+      .eq('id', id);
+
+    if (error) throw error;
+
+    // Refresh UI
     if (balanceResult.value?.id === id) {
       balanceResult.value = null;
     }
     await loadWithdrawals();
   } catch (error) {
-    console.error("Failed to update status", error);
+    alert("Failed to update status");
+    console.error(error);
   }
 };
 
+// 3. Hybrid Balance Check
 const handleCheckBalance = async (withdrawal: Withdrawal) => {
   checkingBalanceId.value = withdrawal.id;
   balanceResult.value = null;
 
   try {
-    const apiResponse = await hardwareApiService.syncUserAccount(withdrawal.phone);
-    const apiLifetimePoints = apiResponse.data.integral;
-    const userHistory = await supabaseService.getUserWithdrawalHistory(withdrawal.user_id);
+    // A. Get Live Points from Hardware API
+    // We treat it as 'any' because we know autogcm.ts now returns the clean object
+    const apiResponse: any = await syncUserAccount(withdrawal.phone);
+    
+    // Now this works perfectly
+    const apiLifetimePoints = Number(apiResponse.integral || 0);
 
-    const totalSpentOrReserved = userHistory
-      .filter((w: Withdrawal) => w.status !== WithdrawalStatus.REJECTED)
-      .reduce((sum: number, w: Withdrawal) => sum + w.amount, 0);
+    // B. Get Total Spent from Database
+    const { data: history } = await supabase
+      .from('withdrawals')
+      .select('amount, status')
+      .eq('user_id', withdrawal.user_id);
+
+    // ... rest of function remains the same ...
+    const totalSpentOrReserved = (history || [])
+      .filter(w => w.status !== WithdrawalStatus.REJECTED)
+      .reduce((sum, w) => sum + Number(w.amount), 0);
 
     const available = apiLifetimePoints - totalSpentOrReserved;
 

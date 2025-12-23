@@ -1,17 +1,31 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { supabase } from '../services/supabase';
-import { getNearbyRVMs } from '../services/autogcm';
+import { useMachineStore } from '../stores/machines'; // 1. Import Store
+import { storeToRefs } from 'pinia';
 import { AlertCircle, Server, Coins, Activity } from 'lucide-vue-next';
 
+// 2. Setup Store
+const machineStore = useMachineStore();
+const { machines, loading: machineLoading } = storeToRefs(machineStore);
+
 const pendingCount = ref<number>(0);
-const onlineMachines = ref<number>(0);
 const totalPoints = ref<number>(0);
-const loading = ref<boolean>(true);
+const dashboardLoading = ref<boolean>(true);
+
+// 3. Computed Property for Online Count
+// This updates automatically whenever the store updates!
+const onlineMachinesCount = computed(() => {
+  return machines.value.filter((m) => m.isOnline).length;
+});
 
 onMounted(async () => {
   try {
-    // A. Get Pending Withdrawals count
+    // A. Trigger Machine Store (Uses Cache if available)
+    // We don't await this blocking the whole UI, we let it load in parallel
+    machineStore.fetchMachines();
+
+    // B. Get Pending Withdrawals count (Supabase)
     const { count, error } = await supabase
       .from('withdrawals')
       .select('*', { count: 'exact', head: true })
@@ -21,14 +35,7 @@ onMounted(async () => {
       pendingCount.value = count;
     }
 
-    // B. Get Online Machines
-    // Fix: getNearbyRVMs returns Machine[] directly, not { data: Machine[] }
-    const machines = await getNearbyRVMs(3.14, 101.68); 
-    if (machines && Array.isArray(machines)) {
-      onlineMachines.value = machines.filter((m) => m.isOnline === 1).length;
-    }
-
-    // C. Get Total Points
+    // C. Get Total Points (Supabase)
     const { data: userData, error: userError } = await supabase
       .from('users')
       .select('lifetime_integral');
@@ -40,7 +47,7 @@ onMounted(async () => {
   } catch (err) {
     console.error("Dashboard Data Error:", err);
   } finally {
-    loading.value = false;
+    dashboardLoading.value = false;
   }
 });
 
@@ -49,7 +56,7 @@ const formatNumber = (num: number) => num.toLocaleString();
 
 <template>
   <div class="space-y-8 p-6">
-    <div v-if="loading" class="flex h-64 items-center justify-center">
+    <div v-if="dashboardLoading && machines.length === 0" class="flex h-64 items-center justify-center">
       <div class="text-gray-400 animate-pulse font-medium">Loading Analytics...</div>
     </div>
 
@@ -74,7 +81,11 @@ const formatNumber = (num: number) => num.toLocaleString();
               <Server :size="24" />
             </div>
           </div>
-          <div class="text-3xl font-bold text-gray-900 mb-1">{{ onlineMachines }}</div>
+          
+          <div class="text-3xl font-bold text-gray-900 mb-1">
+             <span v-if="machineLoading && machines.length === 0" class="text-lg text-gray-400">Syncing...</span>
+             <span v-else>{{ onlineMachinesCount }}</span>
+          </div>
           <div class="text-xs text-green-600 font-medium">Active RVM Units</div>
         </div>
 

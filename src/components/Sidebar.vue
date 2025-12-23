@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router';
-import { LayoutDashboard, Wallet, Users, MonitorSmartphone, LogOut, Shield } from 'lucide-vue-next';
-
+// ✅ ADDED: ClipboardCheck
+import { LayoutDashboard, Wallet, Users, MonitorSmartphone, LogOut, Shield, ClipboardCheck, Trash2 } from 'lucide-vue-next';
 
 const route = useRoute();
-
 const isActive = (path: string) => route.path === path;
 </script>
 
@@ -24,6 +23,14 @@ const isActive = (path: string) => route.path === path;
       >
         <LayoutDashboard :size="20" />
         Dashboard
+      </RouterLink>
+
+      <RouterLink to="/submissions" 
+        class="flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors"
+        :class="isActive('/submissions') ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'"
+      >
+        <ClipboardCheck :size="20" />
+        Submissions
       </RouterLink>
 
       <RouterLink to="/withdrawals" 
@@ -48,6 +55,14 @@ const isActive = (path: string) => route.path === path;
       >
         <MonitorSmartphone :size="20" />
         Machines
+      </RouterLink>
+
+      <RouterLink to="/cleaning-logs" 
+        class="flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors"
+        :class="isActive('/cleaning-logs') ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'"
+      >
+        <Trash2 :size="20" />
+        Waste Logs
       </RouterLink>
 
       <RouterLink to="/admins" 
