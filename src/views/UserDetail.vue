@@ -9,7 +9,7 @@ const activeTab = ref<'earned' | 'spent'>('earned');
 
 // Initialize logic with current route ID
 const userId = route.params.id as string;
-const { user, disposalHistory, withdrawalHistory, loading, isSyncing, syncData } = useUserProfile(userId);
+const { user, disposalHistory, withdrawalHistory, loading, isSyncing, syncData, auditResult } = useUserProfile(userId);
 
 // Watch for route changes (if user navigates between profiles)
 watch(() => route.params.id, (newId) => {
@@ -53,10 +53,20 @@ watch(() => route.params.id, (newId) => {
                   <div class="text-3xl font-bold text-blue-600">{{ user.lifetime_integral ?? 0 }}</div>
               </div>
               
-              <button @click="syncData" :disabled="isSyncing" class="flex items-center justify-center h-10 px-4 rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 transition-all active:scale-95">
-                  <RefreshCw :size="16" :class="{'animate-spin': isSyncing, 'mr-2': true}" />
-                  {{ isSyncing ? 'Syncing...' : 'Sync' }}
-              </button>
+              <div class="flex flex-col items-end">
+                <button 
+                    @click="syncData" 
+                    :disabled="isSyncing" 
+                    class="flex items-center justify-center h-10 px-4 rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 transition-all active:scale-95 shadow-sm"
+                    title="Fetches latest points from machine & auto-corrects any missing withdrawals"
+                >
+                    <RefreshCw :size="16" :class="{'animate-spin': isSyncing, 'mr-2': true}" />
+                    {{ isSyncing ? 'Syncing...' : 'Sync Data' }}
+                </button>
+                <div class="text-[10px] text-gray-400 mt-1.5 text-right max-w-[150px] leading-tight">
+                Pulls latest machine balance & updates user profile.
+                </div>
+            </div>
           </div>
       </div>
 
@@ -73,7 +83,47 @@ watch(() => route.params.id, (newId) => {
       </div>
     </div>
 
+    
+    <div v-if="!loading" class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden mb-6">
+        <div class="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+           <div class="flex items-center">
+              <span class="mr-2 text-xl">⚖️</span> 
+              <div>
+                  <h3 class="text-sm font-bold text-slate-700 uppercase">Live Ledger Balance</h3>
+                  <div class="text-[10px] text-gray-500">Auto-reconciles with API on Sync</div>
+              </div>
+           </div>
+           
+           <div v-if="auditResult.isMatch" class="flex items-center px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold">
+               <span class="w-2 h-2 bg-green-500 rounded-full mr-2"></span> Synced & Balanced
+           </div>
+           <div v-else class="flex items-center px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-bold">
+               <span class="w-2 h-2 bg-amber-500 rounded-full mr-2 animate-pulse"></span> Pending Sync
+           </div>
+        </div>
+
+        <div class="grid grid-cols-3 divide-x divide-gray-100 text-center p-4">
+            <div>
+                <div class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Total Earned</div>
+                <div class="text-lg font-bold text-gray-700">{{ auditResult.totalEarned }}</div>
+            </div>
+            <div>
+                 <div class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Withdrawn (All Sources)</div>
+                 <div class="text-lg font-bold text-red-600">-{{ auditResult.totalWithdrawn }}</div>
+            </div>
+            <div :class="{'bg-green-50': auditResult.isMatch}">
+                 <div class="text-xs text-gray-400 uppercase tracking-wider font-semibold">Live Balance</div>
+                 <div class="text-2xl font-bold text-blue-600">{{ auditResult.apiSnapshot }}</div>
+            </div>
+        </div>
+        
+        <div v-if="auditResult.externalDeductions > 0" class="bg-blue-50 p-3 text-center text-xs text-blue-700 border-t border-blue-100">
+            ℹ️ <strong>Sync Update:</strong> We detected an external withdrawal of 
+            <strong>{{ auditResult.externalDeductions.toFixed(2) }} pts</strong> on the old app and added it to your records automatically.
+        </div>
+    </div>
     <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden min-h-[400px]">
+        
       <div class="border-b border-gray-100 flex">
           <button @click="activeTab = 'earned'" :class="`flex-1 py-4 text-center text-sm font-medium border-b-2 transition-colors ${activeTab === 'earned' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:bg-gray-50'}`">Recycling History</button>
           <button @click="activeTab = 'spent'" :class="`flex-1 py-4 text-center text-sm font-medium border-b-2 transition-colors ${activeTab === 'spent' ? 'border-amber-500 text-amber-600' : 'border-transparent text-gray-500 hover:bg-gray-50'}`">Withdrawals</button>
@@ -107,14 +157,38 @@ watch(() => route.params.id, (newId) => {
                   <thead class="bg-gray-50 text-gray-500 text-xs uppercase">
                       <tr><th class="px-6 py-3">Date</th><th class="px-6 py-3">Amount</th><th class="px-6 py-3">Status</th></tr>
                   </thead>
-                  <tbody class="divide-y divide-gray-100">
-                      <tr v-if="withdrawalHistory.length === 0"><td colspan="3" class="p-6 text-center text-gray-400">No withdrawals found</td></tr>
-                      <tr v-for="w in withdrawalHistory" :key="w.id" class="hover:bg-gray-50">
-                          <td class="px-6 py-3 text-sm text-gray-600">{{ new Date(w.created_at).toLocaleString() }}</td>
-                          <td class="px-6 py-3 text-sm font-bold text-red-600">-{{ w.amount }}</td>
-                          <td class="px-6 py-3 text-sm">{{ w.status }}</td>
-                      </tr>
-                  </tbody>
+                    <tbody class="divide-y divide-gray-100">
+                        <tr v-if="withdrawalHistory.length === 0">
+                            <td colspan="3" class="p-6 text-center text-gray-400">No withdrawals found</td>
+                        </tr>
+                        <tr v-for="w in withdrawalHistory" :key="w.id" class="hover:bg-gray-50">
+                            <td class="px-6 py-3 text-sm text-gray-600">
+                                {{ new Date(w.created_at).toLocaleString() }}
+                            </td>
+
+                            <td class="px-6 py-3 text-sm font-bold text-red-600">
+                                -{{ w.amount }}
+                            </td>
+
+                            <td class="px-6 py-3 text-sm">
+                                <span v-if="w.status === 'EXTERNAL_SYNC'" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">
+                                    <span class="mr-1">🤖</span> External Sync
+                                </span>
+                                
+                                <span v-else-if="w.status === 'PENDING'" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                    Pending
+                                </span>
+
+                                <span v-else-if="w.status === 'PAID' || w.status === 'APPROVED'" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                    Paid
+                                </span>
+                                
+                                <span v-else class="capitalize text-gray-600">
+                                    {{ w.status }}
+                                </span>
+                            </td>
+                        </tr>
+                    </tbody>
               </table>
           </div>
       </div>

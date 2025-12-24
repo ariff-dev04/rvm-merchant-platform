@@ -1,8 +1,11 @@
-// Fix: Use 'as const' object instead of enum for erasableSyntaxOnly compatibility
+// ✅ FIXED: Values changed to lowercase to match your DB/Vue code
+// ✅ ADDED: 'external_sync' and 'manual_correction'
 export const WithdrawalStatus = {
   PENDING: 'PENDING',
   APPROVED: 'APPROVED',
-  REJECTED: 'REJECTED'
+  REJECTED: 'REJECTED',
+  PAID: 'PAID',
+  EXTERNAL_SYNC: 'EXTERNAL_SYNC' // <--- The new status
 } as const;
 
 export type WithdrawalStatus = typeof WithdrawalStatus[keyof typeof WithdrawalStatus];
@@ -10,7 +13,7 @@ export type WithdrawalStatus = typeof WithdrawalStatus[keyof typeof WithdrawalSt
 // ✅ UPDATED: Added new DB columns (nickname, avatar, card, sync time)
 export interface User {
   id: string;
-  vendor_user_no?: string | null; // Made optional as it might be null initially
+  vendor_user_no?: string | null;
   phone: string;
   lifetime_integral: number;
   created_at: string;
@@ -29,7 +32,7 @@ export interface Withdrawal {
   user_id: string;
   phone: string;
   amount: number;
-  status: WithdrawalStatus;
+  status: WithdrawalStatus; // Now accepts 'pending' | 'external_sync' | etc.
   created_at: string;
 }
 
@@ -47,11 +50,12 @@ export interface ApiUserSyncResponse {
   code: number;
   msg: string;
   data: {
-    userNo: string;       // Maps to vendor_user_no
-    integral: number;     // Maps to lifetime_integral
+    userNo: string;
+    integral: number;
     phone: string;
-    nikeName?: string;    // Note the API typo "nikeName" 
-    imgUrl?: string;      // Maps to avatar_url
+    nikeName?: string;  
+    name?: string;        
+    imgUrl?: string;
     createTime?: string;
     isNewUser?: number;
   };
@@ -64,14 +68,14 @@ export interface ApiDisposalRecord {
   deviceName?: string;
   weight: number;
   integral: number;
-  rubbishName?: string; // Sometimes nested in rubbishLogDetailsVOList
+  rubbishName?: string; 
   createTime: string;
   imgUrl?: string;
   
   // Critical for fetching the Card Number
-  cardNo?: string;      // 
+  cardNo?: string;      
   username?: string;
-  userId?: string;    // 
+  userId?: string;    
 }
 
 export interface ApiPutResponse {

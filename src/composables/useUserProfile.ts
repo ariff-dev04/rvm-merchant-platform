@@ -10,32 +10,37 @@ export function useUserProfile(userId: string) {
   const loading = ref(true);
   const isSyncing = ref(false);
 
-  // 1. Fetch Data (Read-Only)
+  // AUDIT STATE
+  const auditResult = ref({
+    totalEarned: 0,
+    totalWithdrawn: 0,
+    calculatedBalance: 0,
+    apiSnapshot: 0,
+    isMatch: false,
+    externalDeductions: 0 // How many points we just auto-corrected
+  });
+
   const fetchProfile = async () => {
     loading.value = true;
     try {
-      // A. Get Local User
-      const { data: userData, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .single();
-      
-      if (error) throw error;
+      // 1. Get User
+      const { data: userData } = await supabase.from('users').select('*').eq('id', userId).single();
       user.value = userData as User;
 
-      // B. Get Local Withdrawals
-      const { data: withdrawals } = await supabase
-        .from('withdrawals')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+      // 2. Get Withdrawals
+      const { data: withdrawals } = await supabase.from('withdrawals').select('*').eq('user_id', userId).order('created_at', { ascending: false });
       withdrawalHistory.value = (withdrawals as Withdrawal[]) || [];
 
-      // C. Get API History (for display)
-      const apiRecords = await getUserRecords(userData.phone);
-      disposalHistory.value = apiRecords || [];
-
+      // 3. Get API History (Recycling)
+      if (userData?.phone) {
+         const apiRecords = await getUserRecords(userData.phone, 1, 1000); 
+         disposalHistory.value = apiRecords || [];
+         
+         // 4. Run Calc (No auto-fix here, just read-only)
+         if (userData.lifetime_integral !== undefined) {
+             calculateLedger(disposalHistory.value, withdrawalHistory.value, userData.lifetime_integral);
+         }
+      }
     } catch (err) {
       console.error("Fetch error:", err);
     } finally {
@@ -43,62 +48,98 @@ export function useUserProfile(userId: string) {
     }
   };
 
-  // 2. Manual Sync Logic
+  // 🧮 Pure Calculation Helper
+  const calculateLedger = (earnings: ApiDisposalRecord[], withdrawals: Withdrawal[], liveBalance: number) => {
+      // Sum API Recycling
+      const totalEarned = earnings.reduce((sum, r) => sum + Number(r.integral || 0), 0);
+      
+      // Sum Local Withdrawals
+      const totalWithdrawn = withdrawals.reduce((sum, w) => sum + Number(w.amount || 0), 0);
+      
+      const theoreticalBalance = totalEarned - totalWithdrawn;
+      
+      auditResult.value = {
+          totalEarned: parseFloat(totalEarned.toFixed(2)),
+          totalWithdrawn: parseFloat(totalWithdrawn.toFixed(2)),
+          calculatedBalance: parseFloat(theoreticalBalance.toFixed(2)),
+          apiSnapshot: parseFloat(Number(liveBalance).toFixed(2)),
+          isMatch: Math.abs(theoreticalBalance - Number(liveBalance)) < 0.1,
+          externalDeductions: 0
+      };
+      
+      return { totalEarned, totalWithdrawn, theoreticalBalance };
+  };
+
+  // 🔄 SMART SYNC: Detects & Fixes External Withdrawals
   const syncData = async () => {
     if (!user.value) return;
     isSyncing.value = true;
-    console.log("🔄 Syncing:", user.value.phone);
 
     try {
-      // A. Fetch latest data from API
+      // 1. Get Fresh Data from API
       const apiAccount = await syncUserAccount(user.value.phone);
-      // Re-fetch history to ensure we have the latest weights/ids
-      const apiRecords = await getUserRecords(user.value.phone); 
-      disposalHistory.value = apiRecords || [];
-
-      if (apiAccount) {
-        // B. Calculate Totals & Extract IDs
-        // Calculate Total Weight (Sum of all records)
-        const calculatedWeight = apiRecords.reduce((sum, r) => sum + Number(r.weight || 0), 0);
+      const apiRecords = await getUserRecords(user.value.phone, 1, 1000); 
+      
+      if (apiAccount && apiRecords) {
+        // 2. Update Local State Temporarily for Calculation
+        const currentWithdrawals = await supabase.from('withdrawals').select('*').eq('user_id', userId);
+        const localWithdrawals = (currentWithdrawals.data as Withdrawal[]) || [];
         
-        // Find first record with IDs
-        const recordWithCard = apiRecords.find(r => r.cardNo && r.cardNo !== "0");
-        const recordWithInternalId = apiRecords.find(r => r.userId && r.userId !== "0");
+        // 3. Calculate Discrepancy
+        const { theoreticalBalance } = calculateLedger(apiRecords, localWithdrawals, apiAccount.integral);
+        
+        const liveBalance = Number(apiAccount.integral);
+        const difference = theoreticalBalance - liveBalance;
 
-        // C. Prepare Updates
+        // 4. 🚨 AUTO-CORRECT: If Theoretical > Live, they spent points externally!
+        if (difference > 0.1) {
+            console.log(`⚠️ External Withdrawal Detected: ${difference.toFixed(2)} pts.`);
+            
+            const { error } = await supabase.from('withdrawals').insert({
+                user_id: userId,
+                amount: difference.toFixed(2),
+                status: 'EXTERNAL_SYNC', // ✅ Uppercase to match DB Check Constraint
+                created_at: new Date().toISOString()
+            });
+
+            if (error) {
+                console.error("🔥 Supabase Insert Failed:", error.message);
+                alert("Sync Error: " + error.message);
+            }
+        }
+
+        // 5. Update User Profile in Supabase (FIXED MAPPING HERE)
+        const calculatedWeight = apiRecords.reduce((sum: number, r: any) => sum + Number(r.weight || 0), 0);
+        
         const updates: any = {
-          last_synced_at: new Date().toISOString(),
-          lifetime_integral: apiAccount.integral,
-          vendor_user_no: apiAccount.userNo,
-          total_weight: calculatedWeight.toFixed(2) // ✅ NEW: Save Weight
+           last_synced_at: new Date().toISOString(),
+           lifetime_integral: apiAccount.integral,
+           total_weight: calculatedWeight.toFixed(2),
+           // 👇 FIX: Map API 'nikeName' -> DB 'nickname'
+           nickname: apiAccount.nikeName || apiAccount.name || user.value.nickname, 
+           // 👇 FIX: Map API 'imgUrl' -> DB 'avatar_url'
+           avatar_url: apiAccount.imgUrl || user.value.avatar_url,
+           // 👇 FIX: Ensure Vendor ID is saved
+           vendor_user_no: apiAccount.userNo || user.value.vendor_user_no,
+           vendor_internal_id: apiAccount.userNo || user.value.vendor_internal_id
         };
 
-        // Update IDs if found
-        if (recordWithCard?.cardNo) updates.card_no = recordWithCard.cardNo;
-        if (recordWithInternalId?.userId) updates.vendor_internal_id = recordWithInternalId.userId; // ✅ NEW: Save Internal ID
-
-        // Update Profile Info (only if not empty)
-        if (apiAccount.nikeName?.trim()) updates.nickname = apiAccount.nikeName;
-        if (apiAccount.imgUrl?.trim()) updates.avatar_url = apiAccount.imgUrl;
-
-        console.log("💾 Saving Updates:", updates);
-
-        // D. Save to DB & Update Local State
-        const { error } = await supabase.from('users').update(updates).eq('id', userId);
-        if (error) throw error;
+        const { error: updateError } = await supabase.from('users').update(updates).eq('id', userId);
+        
+        if (updateError) console.error("User Update Failed:", updateError);
         
         user.value = { ...user.value, ...updates };
-        console.log("✅ Sync Successful");
+
+        // 6. Refresh Lists
+        await fetchProfile();
       }
     } catch (err) {
       console.error("Sync failed:", err);
-      alert("Sync failed. Check console.");
     } finally {
       isSyncing.value = false;
     }
   };
 
-  // Initial Load
   fetchProfile();
 
   return { 
@@ -107,7 +148,7 @@ export function useUserProfile(userId: string) {
     withdrawalHistory, 
     loading, 
     isSyncing, 
-    fetchProfile, 
-    syncData 
+    syncData,
+    auditResult 
   };
 }
