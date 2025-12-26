@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue';
 import { useSubmissionReviews } from '../composables/useSubmissionReviews';
 import SubmissionCorrectionModal from '../components/SubmissionCorrectionModal.vue'; // Import Child
 import SubmissionCleanupModal from '../components/SubmissionCleanupModal.vue';
+import { verifyUserSubmissions } from '../services/verification';
 import { RefreshCw, Check, Edit3, Clock, Trash2, X } from 'lucide-vue-next';
 
 // ✅ NEW HELPER: Fixes the Timezone "Double Conversion" bug
@@ -30,6 +31,16 @@ const modalStartInReject = ref(false);
 
 // Filter Logic
 const filteredReviews = computed(() => reviews.value.filter(r => r.status === filter.value));
+
+const isSyncing = ref(false);
+
+const handleSync = async (userId: string, phone: string) => {
+  isSyncing.value = true;
+  await verifyUserSubmissions(userId, phone);
+  // After verification, refresh the list to show new statuses
+  await fetchReviews(); 
+  isSyncing.value = false;
+};
 
 // 1. Fast Confirm
 const handleFastConfirm = async (review: any) => {
@@ -148,9 +159,22 @@ onMounted(() => fetchReviews());
                     <img v-if="item.users?.avatar_url" :src="item.users.avatar_url" class="h-full w-full object-cover" />
                     <span v-else class="text-xs">👤</span>
                 </div>
+
                 <div>
                   <div class="text-sm font-bold text-gray-900">{{ item.users?.nickname || 'Unknown' }}</div>
-                  <div class="text-xs text-gray-500 font-mono">{{ item.phone }}</div>
+                  <div class="text-xs text-gray-500 font-mono mb-1">{{ item.phone }}</div>
+                  
+                  <button 
+                    v-if="item.status === 'PENDING'"
+                    @click.stop="handleSync(item.user_id, item.phone)" 
+                    :disabled="isSyncing"
+                    class="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100 hover:bg-indigo-100 flex items-center gap-1 transition-colors"
+                    title="Check if RVM already paid points for this"
+                  >
+                    <RefreshCw :size="10" :class="{ 'animate-spin': isSyncing }" />
+                    {{ isSyncing ? 'Checking...' : 'Check Live Pts' }}
+                  </button>
+                  
                 </div>
               </div>
             </td>
