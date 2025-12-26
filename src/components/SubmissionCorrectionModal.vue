@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { X, Scale, Calculator, Hash, Ban, Droplet } from 'lucide-vue-next'; // ✅ Added Droplet icon
-import { getEvidencePhotos } from '../composables/useSubmissionReviews';
-
+import { getEvidencePhotos } from '../utils/wasteUtils';
 const props = defineProps<{
   isOpen: boolean;
   review: any;

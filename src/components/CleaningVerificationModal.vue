@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { X, Check, Ban, AlertTriangle, Scale, Image as ImageIcon } from 'lucide-vue-next';
+import { getEvidencePhotos } from '../utils/wasteUtils'; // <--- 1. Import the helper
 
 const props = defineProps<{
   isOpen: boolean;
@@ -13,10 +14,12 @@ const emit = defineEmits(['close', 'approve', 'reject']);
 const rejectMode = ref(false);
 const rejectReason = ref('');
 
-// Helper to get first image if multiple exist
+// 2. Use the helper (Cleaner & Safer)
 const evidencePhoto = computed(() => {
     if (!props.record?.photo_url) return null;
-    return props.record.photo_url.split(',')[0];
+    // The helper fixes URL issues automatically
+    const { before } = getEvidencePhotos(props.record.photo_url);
+    return before;
 });
 
 const handleConfirm = () => {
