@@ -6,11 +6,30 @@ const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // 1. CORS & Method Check
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   const data = req.body;
 
   try {
+    // ------------------------------------------------------------------
+    // 🔥 STEP 0: RAW LOGGING (The Black Box Recorder)
+    // ------------------------------------------------------------------
+    // This runs FIRST. Even if the rest of the code crashes, this log is saved.
+    // This answers your question: "Make sure incoming log will always be recorded"
+    const { error: logError } = await supabase.from('machine_logs').insert({
+        device_no: String(data.deviceNo || 'UNKNOWN'),
+        type: data.type || 'UNKNOWN',
+        vendor_user_no: data.userId ? String(data.userId) : null,
+        payload: data // Saves the entire raw JSON object
+    });
+
+    if (logError) console.error("⚠️ Failed to save raw log (Check RLS permissions):", logError.message);
+
+
+    // ------------------------------------------------------------------
+    // MAIN LOGIC STARTS HERE
+    // ------------------------------------------------------------------
     if (data.type === 'PUT') {
       const { 
         userId, deviceNo, putId, totalWeight, integral, phone, imgUrl, 
@@ -43,31 +62,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const currentLevel = Number(item.positionWeight || 0);
             const wasteType = item.rubbishName || 'Unknown';
 
+            // 🔥 THRESHOLD: 0.5kg (Sensitive enough for small cleanings)
+            const CLEANING_THRESHOLD_KG = 0.5;
+
             // Bin 1 (Plastic/UCO)
             if (binId === '1') {
                 const lastWeight = Number(machineState.current_bag_weight || 0);
-                if (lastWeight > 3.0 && currentLevel < 1.0) {
+                
+                // Logic: Weight dropped significantly
+                if (lastWeight > CLEANING_THRESHOLD_KG && currentLevel < 1.0 && currentLevel < lastWeight) {
                     console.log(`🧹 BIN 1 CLEANING (${deviceNo}): ${lastWeight}kg -> ${currentLevel}kg`);
-                    await logCleaning(deviceNo, wasteType, lastWeight, imgUrl, 'Bin 1 (Plastic/UCO)');
+                    await logCleaning(deviceNo, wasteType, lastWeight, imgUrl);
                 }
                 await supabase.from('machines').update({ current_bag_weight: currentLevel }).eq('id', machineState.id);
             } 
             // Bin 2 (Paper)
             else if (binId === '2') {
                 const lastWeight = Number(machineState.current_weight_2 || 0);
-                if (lastWeight > 3.0 && currentLevel < 1.0) {
+                
+                if (lastWeight > CLEANING_THRESHOLD_KG && currentLevel < 1.0 && currentLevel < lastWeight) {
                     console.log(`🧹 BIN 2 CLEANING (${deviceNo}): ${lastWeight}kg -> ${currentLevel}kg`);
-                    await logCleaning(deviceNo, wasteType, lastWeight, imgUrl, 'Bin 2 (Paper)');
+                    await logCleaning(deviceNo, wasteType, lastWeight, imgUrl);
                 }
                 await supabase.from('machines').update({ current_weight_2: currentLevel }).eq('id', machineState.id);
             }
         }
       } else {
-          console.warn(`⚠️ Machine not found: ${deviceNo}`);
+          console.warn(`⚠️ Machine not found in DB: ${deviceNo}`);
       }
 
       // ------------------------------------------------------------------
-      // 2. USER SUBMISSION & REGISTRATION LOGIC (The New Part)
+      // 2. USER SUBMISSION & REGISTRATION LOGIC
       // ------------------------------------------------------------------
       console.log("📝 [SUBMISSION]: Processing User Points...");
 
@@ -110,13 +135,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   await supabase.from('users').update(updates).eq('id', internalUserId);
               }
           } else {
-              // Create New "Ghost User"
+              // 🔥 Create New "Ghost User" (Auto-Register Logic)
+              console.log(`🆕 Creating new user: ${userPhone || machineUserId}`);
               const { data: newUser } = await supabase
                 .from('users')
                 .insert({
                     vendor_user_no: machineUserId,
                     phone: userPhone,
-                    is_active: true
+                    is_active: true,
+                    nickname: 'New User' // Added a default nickname so it looks nice in UI
                 })
                 .select('id')
                 .single();
@@ -125,10 +152,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // ------------------------------------------------------------------
-      // 3. SAVE RECORD
+      // 3. SAVE RECORD (With Smart Verification)
       // ------------------------------------------------------------------
       const primaryItem = userRubbishPutDetailsVOList?.[0] || {};
       const primaryBinLevel = Number(primaryItem.positionWeight || data.positionWeight || 0);
+      
+      // 🔥 LOGIC: Auto-Verify if machine gave points
+      const machinePoints = Number(integral || 0);
+      const isVerified = machinePoints > 0;
 
       await supabase
         .from('submission_reviews')
@@ -140,9 +171,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             device_no: deviceNo,
             waste_type: primaryItem.rubbishName || 'Unknown',
             api_weight: totalWeight,
-            machine_given_points: integral,
             photo_url: imgUrl,
-            status: 'PENDING',
+            
+            // ✅ AUTO-VERIFY logic
+            status: isVerified ? 'VERIFIED' : 'PENDING',
+            calculated_points: machinePoints,
+            confirmed_weight: isVerified ? totalWeight : 0,
+            
+            machine_given_points: machinePoints,
             source: 'WEBHOOK',
             submitted_at: new Date().toISOString(),
             bin_weight_snapshot: primaryBinLevel
@@ -154,18 +190,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   } catch (error: any) {
     console.error("Webhook Error:", error.message);
-    return res.status(500).json({ error: "Internal Server Error" });
+    // Return 200 so the machine doesn't retry forever, but log the error internally
+    return res.status(200).json({ error: "Logged" });
   }
 }
 
 // Helper function
-async function logCleaning(deviceNo: string, type: string, weight: number, url: string, binName: string) {
+async function logCleaning(deviceNo: string, type: string, weight: number, url: string) {
     const supabaseUrl = process.env.VITE_SUPABASE_URL!;
     const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    await supabase.from('cleaning_records').insert([{
+    // Insert cleaning record
+    const { error } = await supabase.from('cleaning_records').insert([{
         device_no: deviceNo,
         waste_type: type,
         bag_weight_collected: weight,
-        cleaned_at: new Date().toISOString
+        cleaned_at: new Date().toISOString(),
+        photo_url: url,
+        status: 'PENDING' 
+    }]);
+
+    if (error) console.error(`❌ Failed to log cleaning for ${deviceNo}:`, error.message);
+    else console.log(`✅ Cleaning Logged for ${deviceNo}`);
+}

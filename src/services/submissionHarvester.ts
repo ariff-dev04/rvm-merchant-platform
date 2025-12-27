@@ -1,43 +1,90 @@
-import { supabase } from '../services/supabase'; // Adjust path as needed
-import { getUserRecords, getMachineConfig } from '../services/autogcm'; // Adjust path
+import { supabase } from '../services/supabase'; 
+import { getUserRecords, getMachineConfig } from '../services/autogcm'; 
 import { THEORETICAL_CONSTANTS, UCO_DEVICE_IDS, detectWasteType } from '../utils/wasteUtils';
 
-// This function scrapes the Hardware API and inserts missing records into Supabase
 export const runHarvester = async () => {
     try {
-        console.log("🚜 Starting Harvest...");
+        console.log("🚜 [HARVESTER] Starting...");
         
-        // 1. Get Users to check
-        const { data: users } = await supabase.from('users').select('id, phone');
-        if (!users) return;
+        // 1. Get Users (Prioritize those who haven't been synced recently)
+        const { data: users } = await supabase
+            .from('users')
+            .select('id, phone, nickname, last_synced_at')
+            .order('last_synced_at', { ascending: true, nullsFirst: true });
+        
+        if (!users || users.length === 0) {
+            console.log("⚠️ [HARVESTER] No users found in DB.");
+            return;
+        }
 
+        console.log(`🔎 [HARVESTER] Checking ${users.length} users...`);
         const machineCache: Record<string, any[]> = {};
+        let newRecordsCount = 0;
+        const now = new Date();
 
         for (const user of users) {
-            // Fetch last 10 records from Hardware API
+            // OPTIMIZATION: Skip if synced less than 2 minutes ago
+            // This prevents "useless fetching" as you requested
+            if (user.last_synced_at) {
+                const lastSync = new Date(user.last_synced_at);
+                const diffMinutes = (now.getTime() - lastSync.getTime()) / 60000;
+                if (diffMinutes < 2) {
+                    console.log(`   ⏭️ Skipping ${user.phone} (Synced recently)`);
+                    continue; 
+                }
+            }
+
+            console.log(`   > Checking User: ${user.phone}...`);
+            
+            // Update timestamp so we don't check them again immediately
+            await supabase.from('users').update({ last_synced_at: now.toISOString() }).eq('id', user.id);
+
             const apiRecords = await getUserRecords(user.phone, 1, 10);
             
+            if (!apiRecords || apiRecords.length === 0) continue;
+
             for (const record of apiRecords) {
-                // Check if we already have this record
+                // Check if record exists
                 const { data: existing } = await supabase
                     .from('submission_reviews')
-                    .select('id')
+                    .select('id, status')
                     .eq('vendor_record_id', record.id)
                     .maybeSingle();
 
+                const machinePoints = Number(record.integral || 0);
+
                 if (!existing) {
-                    console.log(`✨ New Record Found: ${record.id} for device ${record.deviceNo}`);
+                    // NEW RECORD
+                    console.log(`   ✨ FOUND NEW: ${record.deviceNo} | ${record.weight}kg`);
                     await processSingleRecord(record, user, machineCache);
+                    newRecordsCount++;
+                } else {
+                    // EXISTING RECORD - FIX STUCK PENDING
+                    // If it is PENDING but the machine actually gave points, VERIFY IT.
+                    if (existing.status === 'PENDING' && machinePoints > 0) {
+                        console.log(`   🔄 AUTO-VERIFYING stuck record: ${record.deviceNo}`);
+                        
+                        const { error: updateError } = await supabase.from('submission_reviews').update({
+                            status: 'VERIFIED',
+                            confirmed_weight: record.weight,
+                            calculated_points: machinePoints,
+                            machine_given_points: machinePoints,
+                            reviewed_at: new Date().toISOString()
+                        }).eq('id', existing.id);
+
+                        if (updateError) console.error("   ❌ Update Failed (Check RLS):", updateError.message);
+                    }
                 }
             }
         }
+        console.log(`✅ [HARVESTER] Done. Imported ${newRecordsCount} new.`);
+
     } catch (err) {
-        console.error("Harvesting failed:", err);
+        console.error("❌ [HARVESTER] Failed:", err);
         throw err;
     }
 };
 
-// Helper to process one API record
 async function processSingleRecord(record: any, user: any, machineCache: Record<string, any[]>) {
     let detailName = "";
     let detailPositionId = "";
@@ -87,6 +134,12 @@ async function processSingleRecord(record: any, user: any, machineCache: Record<
     const unitWeight = THEORETICAL_CONSTANTS[typeKey] || 0.05;
     const theoretical = (Number(record.weight) / unitWeight) * unitWeight;
 
+    // 🔥 LOGIC: AUTO-VERIFY NEW RECORDS
+    const machinePoints = Number(record.integral || 0);
+    
+    // If machine gave points, assume it is valid and Verified.
+    const isVerified = machinePoints > 0; 
+
     // 6. Insert into DB
     const { error } = await supabase.from('submission_reviews').insert({
         vendor_record_id: record.id,
@@ -99,10 +152,15 @@ async function processSingleRecord(record: any, user: any, machineCache: Record<
         submitted_at: record.createTime,
         theoretical_weight: theoretical.toFixed(3),
         rate_per_kg: finalRate.toFixed(4), 
-        status: 'PENDING',
+        
+        // ✅ AUTO-VERIFY HERE
+        status: isVerified ? 'VERIFIED' : 'PENDING',
+        confirmed_weight: isVerified ? record.weight : 0, 
+        calculated_points: machinePoints, 
+        
         bin_weight_snapshot: record.positionWeight || 0, 
-        machine_given_points: record.integral || 0,
-        source: 'FETCH' // Distinct from WEBHOOK
+        machine_given_points: machinePoints,
+        source: 'FETCH'
     });
 
     if (error) console.error("Insert Error:", error.message);
