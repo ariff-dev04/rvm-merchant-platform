@@ -19,8 +19,8 @@ const {
   totalPoints, 
   totalWeight, 
   recentWithdrawals,
-  recentSubmissions, // ♻️
-  recentCleaning,    // 🧹
+  recentSubmissions, 
+  recentCleaning,    
   fetchStats 
 } = useDashboardStats();
 

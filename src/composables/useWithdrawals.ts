@@ -2,6 +2,7 @@ import { ref } from 'vue';
 import { supabase } from '../services/supabase';
 import { syncUserAccount } from '../services/autogcm';
 import { WithdrawalStatus, type Withdrawal } from '../types';
+import { useAuthStore } from '../stores/auth';
 
 interface BalanceCheckResult {
   id: string;
@@ -20,10 +21,10 @@ export function useWithdrawals() {
 
   // 1. Fetch Data
   const fetchWithdrawals = async () => {
+    const auth = useAuthStore();
     loading.value = true;
     try {
-      // ✅ CHANGE THIS BLOCK
-      const { data, error } = await supabase
+      let query = supabase
         .from('withdrawals')
         .select(`
             *,
@@ -34,6 +35,13 @@ export function useWithdrawals() {
             )
         `)
         .order('created_at', { ascending: false });
+
+      // 🔥 SaaS Filter
+      if (auth.merchantId) {
+          query = query.eq('merchant_id', auth.merchantId);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       withdrawals.value = data as Withdrawal[];

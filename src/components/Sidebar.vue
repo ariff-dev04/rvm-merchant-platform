@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
-import { LayoutDashboard, Wallet, Users, MonitorSmartphone, LogOut, Shield, ClipboardCheck, Trash2 } from 'lucide-vue-next';
+import { LayoutDashboard, Wallet, Users, MonitorSmartphone, LogOut, Shield, ClipboardCheck, Trash2, Settings } from 'lucide-vue-next';
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -80,10 +80,18 @@ const handleLogout = async () => {
         >
         <Shield :size="20" /> 
         Admin Access
-        </RouterLink>
+      </RouterLink>
     </nav>
 
-    <div class="p-4 border-t border-gray-100">
+    <div class="p-4 border-t border-gray-100 space-y-2">
+      <RouterLink to="/settings" 
+        class="flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors"
+        :class="isActive('/settings') ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'"
+      >
+          <Settings :size="20" />
+          <span>Settings</span>
+      </RouterLink>
+
       <button 
         @click="handleLogout"
         class="flex items-center gap-3 px-4 py-3 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg w-full transition-colors cursor-pointer"

@@ -2,6 +2,7 @@ import { ref, computed, watch } from 'vue';
 import { supabase } from '../services/supabase';
 import type { SubmissionReview } from '../types';
 import { runHarvester } from '../services/submissionHarvester';
+import { useAuthStore } from '../stores/auth';
 
 export function useSubmissionReviews() {
     // --- State ---
@@ -79,16 +80,32 @@ export function useSubmissionReviews() {
     // --- Actions (Data Fetching) ---
 
     const fetchReviews = async () => {
+        const auth = useAuthStore(); // Get the current user context
         loading.value = true;
-        const { data, error } = await supabase
-            .from('submission_reviews')
-            .select(`*, users(nickname, avatar_url, phone)`)
-            .order('submitted_at', { ascending: false });
+        
+        try {
+            // Start the query
+            let query = supabase
+                .from('submission_reviews')
+                .select(`*, users(nickname, avatar_url, phone)`)
+                .order('submitted_at', { ascending: false });
 
-        if (!error && data) {
-            reviews.value = data as SubmissionReview[];
+            // 🔥 SaaS Filter: If Merchant, only show their reviews
+            if (auth.merchantId) {
+                query = query.eq('merchant_id', auth.merchantId);
+            }
+
+            const { data, error } = await query;
+
+            if (error) throw error;
+            if (data) {
+                reviews.value = data as SubmissionReview[];
+            }
+        } catch (err) {
+            console.error("Fetch Error:", err);
+        } finally {
+            loading.value = false;
         }
-        loading.value = false;
     };
 
     const harvestNewSubmissions = async () => {

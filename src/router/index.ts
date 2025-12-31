@@ -9,6 +9,7 @@ import UserDetail from '../views/UserDetail.vue';
 import MachineStatus from '../views/MachineStatus.vue';
 import Login from '../views/Login.vue';
 import AdminManager from '../views/AdminManager.vue';
+import MerchantSettings from '../views/MerchantSettings.vue';
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -65,7 +66,13 @@ const router = createRouter({
       name: 'CleaningLogs',
       component: () => import('../views/CleaningLogs.vue'),
       meta: { requiresAuth: true } // 🔒 Protected
-    }
+    },
+    {
+    path: '/settings',
+    name: 'Settings',
+    component: MerchantSettings,
+    meta: { requiresAuth: true }
+  }
   ]
 });
 

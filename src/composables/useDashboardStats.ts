@@ -1,8 +1,9 @@
 import { ref } from 'vue';
 import { supabase } from '../services/supabase';
 import type { Withdrawal, SubmissionReview } from '../types';
+import { useAuthStore } from '../stores/auth';
 
-// Define a simple type for Cleaning Record since it might not be in your types.ts yet
+// Define a simple type for Cleaning Record
 interface CleaningRecord {
   id: string;
   device_no: string;
@@ -20,72 +21,66 @@ export function useDashboardStats() {
   
   // ⚡ DATA BUCKETS
   const recentWithdrawals = ref<Withdrawal[]>([]);
-  const recentSubmissions = ref<SubmissionReview[]>([]); // ♻️ New
-  const recentCleaning = ref<CleaningRecord[]>([]); // 🧹 New
+  const recentSubmissions = ref<SubmissionReview[]>([]);
+  const recentCleaning = ref<CleaningRecord[]>([]);
 
   async function fetchStats() {
+    const auth = useAuthStore();
     loading.value = true;
+    
+    // Helper to apply merchant filter
+    const applyFilter = (query: any) => {
+        if (auth.merchantId) return query.eq('merchant_id', auth.merchantId);
+        return query;
+    };
+
     try {
-      const [
-        pendingRes, 
-        usersRes, 
-        withdrawalsRes, 
-        recWithdrawalRes,
-        recSubmissionRes, // 1. Catch Submissions
-        recCleaningRes    // 2. Catch Cleaning Logs
-      ] = await Promise.all([
-        // A. KPI: Pending Count
-        supabase.from('withdrawals').select('*', { count: 'exact', head: true }).eq('status', 'PENDING'),
-        
-        // B. KPI: Users Data
-        supabase.from('users').select('lifetime_integral, total_weight'),
-        
-        // C. KPI: Financials
-        supabase.from('withdrawals').select('amount').neq('status', 'REJECTED'),
+      // 1. Prepare Queries
+      // A. Pending Withdrawals
+      let pendingQuery = supabase.from('withdrawals').select('*', { count: 'exact', head: true }).eq('status', 'PENDING');
+      
+      // B. Total Stats 
+      // 🔥 UPDATED: Added 'status' so we can filter the math
+      let statsQuery = supabase.from('submission_reviews').select('api_weight, calculated_value, status');
+      
+      // C. Recent Lists
+      let recWithdrawalsQuery = supabase.from('withdrawals').select('*, users(nickname, phone)').order('created_at', { ascending: false }).limit(5);
+      let recSubmissionsQuery = supabase.from('submission_reviews').select('*, users(nickname)').order('submitted_at', { ascending: false }).limit(5);
+      
+      // 2. Apply Filters
+      pendingQuery = applyFilter(pendingQuery);
+      statsQuery = applyFilter(statsQuery); 
+      recWithdrawalsQuery = applyFilter(recWithdrawalsQuery);
+      recSubmissionsQuery = applyFilter(recSubmissionsQuery);
 
-        // D. List: Recent Withdrawals
-        supabase
-          .from('withdrawals')
-          .select('*, users(nickname, avatar_url, phone)')
-          .order('created_at', { ascending: false })
-          .limit(5),
-
-        // E. List: Recent Recycling (Submissions)
-        supabase
-          .from('submission_reviews')
-          .select('*, users(nickname, avatar_url)')
-          .order('submitted_at', { ascending: false })
-          .limit(5),
-
-        // F. List: Recent Cleaning
-        supabase
-          .from('cleaning_records')
-          .select('*, machines(deviceName, address)') // Assumes you have a relation setup
-          .order('created_at', { ascending: false })
-          .limit(5)
+      // 3. Execute Parallel
+      const [pendingRes, statsRes, recWRes, recSRes] = await Promise.all([
+        pendingQuery,
+        statsQuery,
+        recWithdrawalsQuery,
+        recSubmissionsQuery
       ]);
 
-      // --- PROCESS KPIS ---
-      if (pendingRes.count) pendingCount.value = pendingRes.count;
+      // 4. Process Results
+      if (pendingRes.count !== null) pendingCount.value = pendingRes.count;
 
-      if (usersRes.data) {
-        const livePoints = usersRes.data.reduce((sum, u) => sum + (u.lifetime_integral || 0), 0);
-        totalWeight.value = usersRes.data.reduce((sum, u) => sum + (u.total_weight || 0), 0);
-        totalPoints.value = livePoints;
+      if (statsRes.data) {
+          // Weight: Counts EVERYTHING (The trash is physically in the machine)
+          totalWeight.value = statsRes.data.reduce((sum, r) => sum + (Number(r.api_weight) || 0), 0);
+          
+          // 🔥 POINTS FIX: Only count value if we have VERIFIED it
+          totalPoints.value = statsRes.data.reduce((sum, r) => {
+              if (r.status === 'VERIFIED') {
+                  return sum + (Number(r.calculated_value) || 0);
+              }
+              return sum;
+          }, 0);
       }
 
-      if (withdrawalsRes.data) {
-        const withdrawnSum = withdrawalsRes.data.reduce((sum, w) => sum + (w.amount || 0), 0);
-        totalPoints.value += withdrawnSum;
-      }
-
-      // --- PROCESS LISTS ---
-      // @ts-ignore - Supabase types are sometimes strict with joins
-      if (recWithdrawalRes.data) recentWithdrawals.value = recWithdrawalRes.data;
       // @ts-ignore
-      if (recSubmissionRes.data) recentSubmissions.value = recSubmissionRes.data;
+      if (recWRes.data) recentWithdrawals.value = recWRes.data;
       // @ts-ignore
-      if (recCleaningRes.data) recentCleaning.value = recCleaningRes.data;
+      if (recSRes.data) recentSubmissions.value = recSRes.data;
 
     } catch (err) {
       console.error("Stats Error:", err);
