@@ -169,11 +169,21 @@ export function useUserProfile(userId: string) {
 
       // D. Update User Metadata
       if (apiAccount) {
-          await supabase.from('users').update({
+          // Prepare update object
+          const updates: any = {
              last_synced_at: new Date().toISOString(),
              nickname: apiAccount.nikeName || apiAccount.name || user.value.nickname, 
              avatar_url: apiAccount.imgUrl || user.value.avatar_url,
-          }).eq('id', userId);
+             
+             // ✅ FIX: Save the Vendor IDs from the API response
+             vendor_user_no: apiAccount.userNo, 
+             
+             // Assuming vendor_internal_id is also mapped to userNo (based on your existing data)
+             // or if it comes from the record list, you could use apiRecords[0]?.userId
+             vendor_internal_id: apiAccount.userNo 
+          };
+
+          await supabase.from('users').update(updates).eq('id', userId);
       }
 
       // E. Refresh View
