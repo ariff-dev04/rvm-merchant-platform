@@ -9,16 +9,22 @@ export function useSubmissionReviews() {
     const reviews = ref<SubmissionReview[]>([]);
     const loading = ref(false);
     const isHarvesting = ref(false);
-    const isProcessing = ref(false); // Shared processing state for actions
+    const isProcessing = ref(false);
 
-    // UI State (Modals & Selection)
+    // UI State (Modals)
     const showModal = ref(false);
     const showCleanupModal = ref(false);
+    
+    // 🔥 NEW: Fast Confirm Modal State
+    const showConfirmModal = ref(false);
+    const confirmMessage = ref('');
+    const reviewToConfirm = ref<SubmissionReview | null>(null);
+
     const selectedReview = ref<SubmissionReview | null>(null);
     const modalStartInReject = ref(false);
 
     // Filter State
-    const activeStatusTab = ref('PENDING'); // Renamed from 'filter' for clarity
+    const activeStatusTab = ref('PENDING'); 
     const searchFilters = ref({
         search: '',
         wasteType: '',
@@ -31,14 +37,9 @@ export function useSubmissionReviews() {
     const itemsPerPage = ref(10);
 
     // --- Computed Logic ---
-
-    // 1. Filtered List
     const filteredReviews = computed(() => {
         return reviews.value.filter(item => {
-            // A. Status Check
             if (item.status !== activeStatusTab.value) return false;
-
-            // B. Text Search
             const q = searchFilters.value.search.toLowerCase();
             if (q) {
                 const match = (item.users?.phone || '').includes(q) ||
@@ -46,23 +47,17 @@ export function useSubmissionReviews() {
                     (item.vendor_record_id || '').toLowerCase().includes(q);
                 if (!match) return false;
             }
-
-            // C. Waste Type
             if (searchFilters.value.wasteType && !item.waste_type?.includes(searchFilters.value.wasteType)) return false;
-
-            // D. Date Range
             if (searchFilters.value.startDate || searchFilters.value.endDate) {
                 if (!item.submitted_at) return false;
                 const itemDate = item.submitted_at.split('T')[0] || '';
                 if (searchFilters.value.startDate && itemDate < searchFilters.value.startDate) return false;
                 if (searchFilters.value.endDate && itemDate > searchFilters.value.endDate) return false;
             }
-
             return true;
         });
     });
 
-    // 2. Pagination Logic
     const totalPages = computed(() => Math.ceil(filteredReviews.value.length / itemsPerPage.value));
     
     const paginatedReviews = computed(() => {
@@ -71,36 +66,26 @@ export function useSubmissionReviews() {
         return filteredReviews.value.slice(start, end);
     });
 
-    // Watcher: Reset page on filter change
-    watch(filteredReviews, () => {
-        currentPage.value = 1;
-    });
+    watch(filteredReviews, () => { currentPage.value = 1; });
 
-
-    // --- Actions (Data Fetching) ---
+    // --- Actions ---
 
     const fetchReviews = async () => {
-        const auth = useAuthStore(); // Get the current user context
+        const auth = useAuthStore();
         loading.value = true;
-        
         try {
-            // Start the query
             let query = supabase
                 .from('submission_reviews')
                 .select(`*, users(nickname, avatar_url, phone)`)
                 .order('submitted_at', { ascending: false });
 
-            // 🔥 SaaS Filter: If Merchant, only show their reviews
             if (auth.merchantId) {
                 query = query.eq('merchant_id', auth.merchantId);
             }
 
             const { data, error } = await query;
-
             if (error) throw error;
-            if (data) {
-                reviews.value = data as SubmissionReview[];
-            }
+            if (data) reviews.value = data as SubmissionReview[];
         } catch (err) {
             console.error("Fetch Error:", err);
         } finally {
@@ -120,26 +105,31 @@ export function useSubmissionReviews() {
         }
     };
 
-    // --- Actions (Business Logic) ---
-
-    // Open Modal Helper
+    // Open Main Correction Modal
     const openReviewModal = (review: SubmissionReview, startReject: boolean = false) => {
         selectedReview.value = review;
         modalStartInReject.value = startReject;
         showModal.value = true;
     };
 
-    // Fast Confirm
-    const handleFastConfirm = async (review: SubmissionReview) => {
+    // 🔥 NEW: Trigger Fast Confirm Modal (Replaces window.confirm)
+    const triggerFastConfirm = (review: SubmissionReview) => {
+        reviewToConfirm.value = review;
         const points = (review.api_weight * review.rate_per_kg).toFixed(2);
-        if (!confirm(`Approve Submission #${review.vendor_record_id.slice(-6)}?\n\nWeight: ${review.api_weight}kg\nPoints: ${points}`)) return;
-        
-        isProcessing.value = true;
-        await verifySubmission(review.id, review.api_weight, review.rate_per_kg);
-        isProcessing.value = false;
+        confirmMessage.value = `Approve Submission #${review.vendor_record_id.slice(-6)}?\nWeight: ${review.api_weight}kg\nPoints: ${points}`;
+        showConfirmModal.value = true;
     };
 
-    // Modal Submit (Correction)
+    // 🔥 NEW: Actual Execution of Fast Confirm
+    const executeFastConfirm = async () => {
+        if (!reviewToConfirm.value) return;
+        isProcessing.value = true;
+        await verifySubmission(reviewToConfirm.value.id, reviewToConfirm.value.api_weight, reviewToConfirm.value.rate_per_kg);
+        isProcessing.value = false;
+        showConfirmModal.value = false;
+        reviewToConfirm.value = null;
+    };
+
     const handleCorrectionSubmit = async (finalWeight: number) => {
         if (!selectedReview.value) return;
         isProcessing.value = true;
@@ -148,7 +138,6 @@ export function useSubmissionReviews() {
         isProcessing.value = false;
     };
 
-    // Modal Reject
     const handleRejectSubmit = async (reason: string) => {
         if (!selectedReview.value) return;
         isProcessing.value = true;
@@ -157,13 +146,11 @@ export function useSubmissionReviews() {
         showModal.value = false;
     };
 
-    // Cleanup
     const handleCleanupSubmit = async (months: number) => {
         isProcessing.value = true;
         const count = await cleanupOldData(months);
         isProcessing.value = false;
         showCleanupModal.value = false;
-
         if (count >= 0) {
             alert(`Cleanup Complete. Deleted ${count} old records.`);
             fetchReviews();
@@ -172,26 +159,90 @@ export function useSubmissionReviews() {
         }
     };
 
-    // --- Private/Internal Actions ---
+    // --- Private/Internal Actions (FIXED COLUMN NAMES HERE) ---
 
     const verifySubmission = async (reviewId: string, finalWeight: number, currentRate: number) => {
         try {
-            const finalPoints = finalWeight * currentRate;
-            const { error } = await supabase
+            const finalPoints = parseFloat((finalWeight * currentRate).toFixed(2));
+
+            // 1. Get Review Details (We need user_id and merchant_id)
+            const { data: reviewData, error: fetchError } = await supabase
+                .from('submission_reviews')
+                .select('user_id, merchant_id')
+                .eq('id', reviewId)
+                .single();
+            
+            if (fetchError || !reviewData) throw new Error("Review not found");
+
+            // 2. Update Review Status
+            const { error: updateError } = await supabase
                 .from('submission_reviews')
                 .update({
                     status: 'VERIFIED',
                     confirmed_weight: finalWeight,
-                    calculated_points: finalPoints,
+                    calculated_value: finalPoints, 
                     reviewed_at: new Date().toISOString()
                 })
                 .eq('id', reviewId);
 
-            if (error) throw error;
+            if (updateError) throw updateError;
+
+            // 3. CREDIT WALLET (This updates the User List Balance)
+            const { data: wallet } = await supabase
+                .from('merchant_wallets')
+                .select('id, current_balance, total_earnings')
+                .eq('user_id', reviewData.user_id)
+                .eq('merchant_id', reviewData.merchant_id)
+                .maybeSingle();
+
+            let newBalance = finalPoints;
+
+            if (wallet) {
+                newBalance = Number(wallet.current_balance) + finalPoints;
+                // Update existing wallet
+                await supabase.from('merchant_wallets').update({
+                    current_balance: newBalance,
+                    total_earnings: Number(wallet.total_earnings) + finalPoints
+                }).eq('id', wallet.id);
+            } else {
+                // Create new wallet if first time
+                await supabase.from('merchant_wallets').insert({
+                    user_id: reviewData.user_id,
+                    merchant_id: reviewData.merchant_id,
+                    current_balance: finalPoints,
+                    total_earnings: finalPoints
+                });
+            }
+
+            // 4. LOG TRANSACTION (Audit Trail)
+            await supabase.from('wallet_transactions').insert({
+                user_id: reviewData.user_id,
+                merchant_id: reviewData.merchant_id,
+                amount: finalPoints,
+                balance_after: newBalance,
+                transaction_type: 'RECYCLE_EARNING',
+                description: `Recycled ${finalWeight}kg`
+            });
+
+            // 5. UPDATE TOTAL WEIGHT (This updates the User List Recycled Kg)
+            const { data: userData } = await supabase
+                .from('users')
+                .select('total_weight, lifetime_integral')
+                .eq('id', reviewData.user_id)
+                .single();
+            
+            const currentWeight = Number(userData?.total_weight || 0);
+            const currentIntegral = Number(userData?.lifetime_integral || 0);
+            
+            await supabase.from('users').update({
+                total_weight: currentWeight + finalWeight,
+                lifetime_integral: currentIntegral + finalPoints
+            }).eq('id', reviewData.user_id);
+
             await fetchReviews();
             return true;
         } catch (err) {
-            console.error(err);
+            console.error("Verification failed:", err);
             return false;
         }
     };
@@ -203,7 +254,7 @@ export function useSubmissionReviews() {
                 .update({
                     status: 'REJECTED',
                     confirmed_weight: 0,
-                    calculated_points: 0,
+                    calculated_value: 0, // ✅ FIXED: Was calculated_points
                     reviewer_note: reason,
                     reviewed_at: new Date().toISOString()
                 })
@@ -229,34 +280,17 @@ export function useSubmissionReviews() {
         }
     }
 
-    // Return EVERYTHING needed by the view
     return {
-        // State
-        reviews,
-        loading,
-        isHarvesting,
-        isProcessing,
-        showModal,
-        showCleanupModal,
-        selectedReview,
-        modalStartInReject,
-        activeStatusTab,
-        searchFilters,
-        currentPage,
-        itemsPerPage,
+        reviews, loading, isHarvesting, isProcessing,
+        showModal, showCleanupModal, selectedReview, modalStartInReject,
         
-        // Computed
-        paginatedReviews,
-        totalPages,
-        filteredReviews,
+        // Confirm Modal Exports
+        showConfirmModal, confirmMessage, triggerFastConfirm, executeFastConfirm,
 
-        // Actions
-        fetchReviews,
-        harvestNewSubmissions,
-        openReviewModal,
-        handleFastConfirm,
-        handleCorrectionSubmit,
-        handleRejectSubmit,
-        handleCleanupSubmit
+        activeStatusTab, searchFilters, currentPage, itemsPerPage,
+        paginatedReviews, totalPages, filteredReviews,
+        
+        fetchReviews, harvestNewSubmissions, openReviewModal,
+        handleCorrectionSubmit, handleRejectSubmit, handleCleanupSubmit
     };
 }

@@ -4,6 +4,7 @@ import { useSubmissionReviews } from '../composables/useSubmissionReviews';
 import SubmissionCorrectionModal from '../components/SubmissionCorrectionModal.vue';
 import SubmissionCleanupModal from '../components/SubmissionCleanupModal.vue';
 import SubmissionFilters from '../components/SubmissionFilters.vue';
+import SimpleConfirmModal from '../components/SimpleConfirmModal.vue';
 import { RefreshCw, Check, Edit3, Clock, Trash2, X, ChevronLeft, ChevronRight } from 'lucide-vue-next';
 
 // Use the fat composable
@@ -29,10 +30,10 @@ const {
   fetchReviews, 
   harvestNewSubmissions,
   openReviewModal,
-  handleFastConfirm,
   handleCorrectionSubmit,
   handleRejectSubmit,
-  handleCleanupSubmit
+  handleCleanupSubmit,
+  showConfirmModal, confirmMessage, triggerFastConfirm, executeFastConfirm
 } = useSubmissionReviews();
 
 // Utility (kept here for view formatting)
@@ -183,7 +184,7 @@ onMounted(() => fetchReviews());
 
             <td class="px-6 py-4 text-center">
               <div v-if="item.status === 'PENDING'" class="flex justify-center gap-2">
-                <button @click="handleFastConfirm(item)" class="p-1.5 bg-green-50 text-green-700 rounded hover:bg-green-100 border border-green-200" title="Confirm"><Check :size="16" /></button>
+                <button @click="triggerFastConfirm(item)" class="p-1.5 bg-green-50 text-green-700 rounded hover:bg-green-100 border border-green-200" title="Confirm"><Check :size="16" /></button>
                 <button @click="openReviewModal(item, false)" class="p-1.5 bg-amber-50 text-amber-700 rounded hover:bg-amber-100 border border-amber-200" title="Correct"><Edit3 :size="16" /></button>
                 <button @click="openReviewModal(item, true)" class="p-1.5 bg-red-50 text-red-700 rounded hover:bg-red-100 border border-red-200" title="Reject"><X :size="16" /></button>
               </div>
@@ -233,6 +234,15 @@ onMounted(() => fetchReviews());
       @close="showModal = false"
       @confirm="handleCorrectionSubmit"
       @reject="handleRejectSubmit"
+    />
+
+    <SimpleConfirmModal
+      :isOpen="showConfirmModal"
+      title="Verify Submission"
+      :message="confirmMessage"
+      :isProcessing="isProcessing"
+      @close="showConfirmModal = false"
+      @confirm="executeFastConfirm"
     />
   </div>
 </template>
