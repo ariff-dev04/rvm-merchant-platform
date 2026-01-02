@@ -2,12 +2,10 @@
 import { onMounted, ref, computed } from 'vue';
 import { useCleaningRecords } from '../composables/useCleaningRecords';
 import CleaningVerificationModal from '../components/CleaningVerificationModal.vue';
-import { useSubmissionReviews } from '../composables/useSubmissionReviews';
 import { Trash2, Clock, Search, Scale, User, ImageIcon, CheckCircle, XCircle, RefreshCw } from 'lucide-vue-next';
 
 const { records, loading, fetchCleaningLogs, approveCleaning, rejectCleaning, formatDate } = useCleaningRecords();
 const searchTerm = ref('');
-const { harvestNewSubmissions, isHarvesting } = useSubmissionReviews();
 
 // Modal State
 const showModal = ref(false);
@@ -23,8 +21,7 @@ const filteredRecords = computed(() => {
   );
 });
 
-const handleFetch = async () => {
-    await harvestNewSubmissions(); // Detects new cleaning events from API
+const handleRefresh = async () => {
     await fetchCleaningLogs();     // Refreshes the table
 };
 
@@ -68,12 +65,12 @@ onMounted(() => {
 
       <div class="flex gap-3 w-full md:w-auto">
         <button 
-            @click="handleFetch" 
-            :disabled="isHarvesting" 
+            @click="handleRefresh" 
+            :disabled="loading" 
             class="flex items-center px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm font-medium"
         >
-            <RefreshCw :size="18" :class="{'animate-spin': isHarvesting, 'mr-2': true}" />
-            {{ isHarvesting ? 'Scanning...' : 'Scan for New' }}
+            <RefreshCw :size="18" :class="{'animate-spin': loading, 'mr-2': true}" />
+            {{ loading ? 'Refreshing...' : 'Refresh Data' }}
         </button>
 
         <div class="relative w-full md:w-64">
