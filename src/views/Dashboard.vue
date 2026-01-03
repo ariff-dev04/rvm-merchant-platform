@@ -109,11 +109,14 @@ const formatNumber = (num: number) => num.toLocaleString(undefined, { maximumFra
                  <CheckCircle2 :size="18" />
               </div>
               <div class="flex-1 min-w-0">
-                <p class="text-sm font-bold text-gray-900 truncate">{{ c.machines?.deviceName || 'Unknown Machine' }}</p>
+                <p class="text-sm font-bold text-gray-900 truncate">{{ c.machines?.device_name || c.device_no || 'Unknown Machine' }}</p>
                 <p class="text-xs text-gray-500">{{ new Date(c.created_at).toLocaleDateString() }}</p>
               </div>
-              <span class="text-[10px] px-2 py-1 rounded-full font-bold uppercase bg-gray-100 text-gray-600">
-                Verified
+              <span 
+                class="text-[10px] px-2 py-1 rounded-full font-bold uppercase" 
+                :class="getStatusColor(c.status)"
+              >
+                {{ c.status }}
               </span>
             </div>
             <div v-if="recentCleaning.length === 0" class="text-center py-6 text-gray-400 text-sm">No logs found</div>
