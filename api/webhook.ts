@@ -13,7 +13,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     // ------------------------------------------------------------------
-    // 🔥 STEP 0: RAW LOGGING (The Black Box Recorder)
+    // 🔥 STEP 0: RAW LOGGING
     // ------------------------------------------------------------------
     const { error: logError } = await supabase.from('machine_logs').insert({
         device_no: String(data.deviceNo || 'UNKNOWN'),
@@ -25,7 +25,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (logError) console.error("⚠️ Failed to save raw log:", logError.message);
 
     // ------------------------------------------------------------------
-    // MAIN LOGIC STARTS HERE
+    // MAIN LOGIC
     // ------------------------------------------------------------------
     if (data.type === 'PUT') {
       const { 
@@ -34,24 +34,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } = data;
 
       // ------------------------------------------------------------------
-      // 1. MACHINE & RATE LOOKUP (Crucial for Robustness)
+      // 1. MACHINE & RATE LOOKUP (FIXED: maybeSingle)
       // ------------------------------------------------------------------
-      // ✅ CHANGE: Added rates and merchant_id to the select query
-      const { data: machineState } = await supabase
+      // ⚠️ FIX: Changed .single() to .maybeSingle() to prevent crashes if machine not found
+      const { data: machineState, error: machineError } = await supabase
         .from('machines')
         .select('id, current_bag_weight, current_weight_2, merchant_id, rate_plastic, rate_can, rate_paper, rate_uco')
         .eq('device_no', String(deviceNo))
-        .single();
+        .maybeSingle(); 
 
-      // We initialize defaults so we can still save the record even if machine lookup fails
+      if (machineError) console.warn("⚠️ Machine Lookup Error:", machineError.message);
+
       let merchantId = null;
       let rateConfig: any = {};
 
       if (machineState) {
         merchantId = machineState.merchant_id;
-        rateConfig = machineState; // Store rates for later use
+        rateConfig = machineState; 
 
-        // --- BIN CLEANING LOGIC (Kept same as before) ---
+        // --- BIN CLEANING LOGIC ---
         const items = userRubbishPutDetailsVOList || [];
         if (items.length === 0 && data.positionWeight) {
             items.push({ positionId: '1', rubbishName: 'UCO', positionWeight: data.positionWeight });
@@ -77,7 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
         }
       } else {
-          console.warn(`⚠️ Machine not found in DB: ${deviceNo} (Saving record anyway)`);
+          console.warn(`⚠️ Machine not found in DB: ${deviceNo} (Continuing to save record...)`);
       }
 
       // ------------------------------------------------------------------
@@ -89,7 +90,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (machineUserId || userPhone) {
           let existingUser = null;
-
           // A. Try Match by Vendor ID
           if (machineUserId) {
               const { data: vendorMatch } = await supabase.from('users').select('id, phone, vendor_user_no').eq('vendor_user_no', machineUserId).maybeSingle();
@@ -118,14 +118,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // ------------------------------------------------------------------
-      // 3. ROBUST VALUATION LOGIC (The New Fix)
+      // 3. ROBUST VALUATION LOGIC
       // ------------------------------------------------------------------
       const primaryItem = userRubbishPutDetailsVOList?.[0] || {};
       const rawWasteName = (primaryItem.rubbishName || 'Unknown').toLowerCase();
       const weight = Number(totalWeight || 0);
       
-      // Step A: Detect Type Robustly (Matches Harvester Logic)
-      let detectedType = 'Plastic'; // Default
+      let detectedType = 'Plastic';
       let appliedRate = 0;
 
       if (rawWasteName.includes('paper') || rawWasteName.includes('kertas')) {
@@ -138,40 +137,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           detectedType = 'Can';
           appliedRate = Number(rateConfig.rate_can || 0);
       } else {
-          // Default to Plastic for everything else (Bottles, Plastik, etc)
           detectedType = 'Plastic';
           appliedRate = Number(rateConfig.rate_plastic || 0);
       }
 
-      // Step B: Calculate Real Value
-      // If machine sent 0 points (common error), we now have our own calculated value
       const calculatedMoney = weight * appliedRate;
-      
-      // We trust our calculation, but if machine gave points, we log that too
       const machinePoints = Number(integral || 0);
+      // ✅ If rate found, status becomes VERIFIED
       const isVerified = machinePoints > 0 || calculatedMoney > 0;
 
       // ------------------------------------------------------------------
       // 4. SAVE RECORD
       // ------------------------------------------------------------------
-      await supabase
+      const { error: saveError } = await supabase
         .from('submission_reviews')
         .upsert([
           {
-            vendor_record_id: String(putId), // Note: BigInt rounding may occur here, but consistent with Harvester
+            vendor_record_id: String(putId),
             user_id: internalUserId,
             phone: userPhone,
-            merchant_id: merchantId, // Link to Merchant
+            merchant_id: merchantId, 
             device_no: deviceNo,
-            waste_type: detectedType, // Normalized Name
-            
+            waste_type: detectedType,
             api_weight: weight,
             confirmed_weight: isVerified ? weight : 0,
-            
-            // THE FIX: Store our calculated money value
             calculated_value: calculatedMoney, 
             rate_per_kg: appliedRate,
-            
             machine_given_points: machinePoints,
             photo_url: imgUrl,
             status: isVerified ? 'VERIFIED' : 'PENDING',
@@ -180,12 +171,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             bin_weight_snapshot: Number(primaryItem.positionWeight || data.positionWeight || 0)
           }
         ], { onConflict: 'vendor_record_id' });
+
+      if (saveError) console.error("❌ Save Error:", saveError.message);
     }
 
     return res.status(200).json({ msg: "Success" });
 
   } catch (error: any) {
-    console.error("Webhook Error:", error.message);
+    console.error("Webhook Critical Error:", error.message);
     return res.status(200).json({ error: "Logged" });
   }
 }
