@@ -63,6 +63,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!merchant) return res.status(500).json({ error: "Merchant configuration missing" });
     const merchantId = merchant.id;
 
+    const errors: any[] = [];
+
     console.log(`Processing ${historyList.length} history items...`);
 
     for (const record of historyList) {
@@ -70,39 +72,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const recordWeight = Number(record.totalWeight || record.weight || 0);
         const putId = String(record.putId); 
 
-        // 1. Check if record exists (e.g. captured by Harvester)
         const { data: existingRecord } = await supabase.from('submission_reviews')
             .select('id, status').eq('vendor_record_id', putId).maybeSingle();
 
         if (existingRecord) {
-            // ✅ FIX: If record is PENDING, we must FORCE UPDATE it to VERIFIED
             if (existingRecord.status === 'PENDING') {
                 console.log(`🔹 Updating PENDING record ${putId} to VERIFIED`);
                 
-                await supabase.from('submission_reviews').update({
+                // 🔥 CAPTURE UPDATE ERROR
+                const { error: updateError } = await supabase.from('submission_reviews').update({
                     status: 'VERIFIED',
                     source: 'MIGRATION',
                     calculated_value: recordValue,
                     confirmed_weight: recordWeight,
                     reviewed_at: new Date().toISOString(),
-                    user_id: user.id // Ensure ownership
+                    user_id: user.id 
                 }).eq('id', existingRecord.id);
 
-                totalImportedValue += recordValue;
-                totalImportedWeight += recordWeight;
+                if (updateError) {
+                    errors.push({ type: 'UPDATE_FAIL', id: putId, msg: updateError.message });
+                } else {
+                    totalImportedValue += recordValue;
+                    totalImportedWeight += recordWeight;
+                }
             } 
             else if (existingRecord.status === 'VERIFIED') {
-                // Already done, just count it
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
             }
         } else {
-            // 2. INSERT NEW RECORD
+            // 🔥 CAPTURE INSERT ERROR
             const { error: insertError } = await supabase.from('submission_reviews').insert({
                 user_id: user.id, 
                 merchant_id: merchantId, 
                 vendor_record_id: putId,
-                status: 'VERIFIED', // ✅ Force VERIFIED status
+                status: 'VERIFIED',
                 calculated_value: recordValue, 
                 waste_type: 'Unknown',
                 source: 'MIGRATION', 
@@ -114,6 +118,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             
             if (insertError) {
                 console.error(`❌ Insert Failed for ${putId}:`, insertError.message);
+                errors.push({ type: 'INSERT_FAIL', id: putId, msg: insertError.message });
             } else {
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
@@ -169,13 +174,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         vendor_user_no: profile?.data?.userNo
     }).eq('id', user.id);
 
-    if (userUpdateError) console.error("❌ User Update Failed:", userUpdateError.message);
+    if (userUpdateError) errors.push({ type: 'USER_UPDATE_FAIL', msg: userUpdateError.message });
 
     return res.status(200).json({ 
         success: true, 
         balance: livePoints, 
         migrated: true,
-        history_items: historyList.length
+        history_items: historyList.length,
+        errors: errors 
     });
 
   } catch (error: any) {
