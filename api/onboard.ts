@@ -3,11 +3,9 @@ import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 import crypto from 'crypto';
 
-// 🟢 CONFIGURATION (Updated to match your Vercel Env Vars)
+// 🟢 CONFIGURATION
 const supabaseUrl = process.env.VITE_SUPABASE_URL!;
-const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY!;
-
-// 👇 FIXED: Using the variable names you confirmed exist in Vercel
+const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY!; // ⚠️ If RLS is on, this might be the problem (See Step 2)
 const SECRET = process.env.VITE_API_SECRET!;        
 const MERCHANT_NO = process.env.VITE_MERCHANT_NO!;
 const API_BASE = "https://api.autogcm.com";
@@ -15,7 +13,6 @@ const API_BASE = "https://api.autogcm.com";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // 1. CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -29,43 +26,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log(`🚀 Starting Onboarding for: ${phone}`);
 
-    // 🔍 DEBUG: Check if Keys are Loaded
-    if (!SECRET || !MERCHANT_NO) {
-        console.error("❌ CRITICAL ERROR: Environment Variables Missing!");
-        console.error(`- VITE_API_SECRET: ${SECRET ? 'Loaded' : 'MISSING'}`);
-        console.error(`- VITE_MERCHANT_NO: ${MERCHANT_NO ? 'Loaded' : 'MISSING'}`);
-        return res.status(500).json({ error: "Server Misconfiguration: Missing API Keys" });
+    // --- A. GET USER ---
+    const { data: user, error: userError } = await supabase.from('users').select('id').eq('phone', phone).single();
+    if (userError || !user) {
+        console.error("❌ DB Error finding user:", userError);
+        return res.status(404).json({ error: 'User not found in DB' });
     }
 
-    // --- A. GET USER ---
-    const { data: user } = await supabase.from('users').select('id').eq('phone', phone).single();
-    if (!user) return res.status(404).json({ error: 'User not found in DB' });
-
-    // --- B. CHECK IF ALREADY MIGRATED ---
+    // --- B. CHECK MIGRATION ---
     const { data: existing } = await supabase.from('wallet_transactions')
         .select('id').eq('user_id', user.id).eq('type', 'MIGRATION_ADJUSTMENT').maybeSingle();
-    
     if (existing) return res.status(200).json({ msg: "Already onboarded" });
 
     // --- C. FETCH VENDOR DATA ---
-    // 1. Live Points
     const profile = await callAutoGCM('/api/open/v1/user/account/sync', 'POST', { phone, nikeName: 'User', avatarUrl: '' });
-    
-    // Safety Check
     if (!profile || !profile.data) {
-        console.error("❌ Failed to fetch Vendor Data. See logs above for details.");
         return res.status(502).json({ error: "Vendor API Connection Failed" });
     }
     const livePoints = Number(profile?.data?.integral || 0);
 
-    // 2. History
     const historyRes = await callAutoGCM('/api/open/v1/put', 'GET', { phone, pageNum: 1, pageSize: 100 });
     const historyList = historyRes?.data?.list || [];
 
-    // --- D. IMPORT & CALCULATE ---
+    // --- D. IMPORT HISTORY ---
     let totalImportedValue = 0;
-    const { data: merchant } = await supabase.from('merchants').select('id').limit(1).single();
-    const merchantId = merchant?.id;
+    
+    // 1. Get Merchant ID (Add Error Check!)
+    const { data: merchant, error: merchError } = await supabase.from('merchants').select('id').limit(1).single();
+    if (merchError || !merchant) {
+        console.error("❌ DB Error finding merchant:", merchError);
+        return res.status(500).json({ error: "Merchant configuration missing in DB" });
+    }
+    const merchantId = merchant.id;
+
+    console.log(`Processing ${historyList.length} history items...`);
 
     for (const record of historyList) {
         const recordValue = Number(record.integral || 0);
@@ -77,29 +71,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (existingRecord) {
             if (existingRecord.status === 'VERIFIED') totalImportedValue += recordValue;
         } else {
-            await supabase.from('submission_reviews').insert({
+            // INSERT NEW RECORD (With Error Check)
+            const { error: insertError } = await supabase.from('submission_reviews').insert({
                 user_id: user.id, merchant_id: merchantId, vendor_record_id: putId,
                 status: 'VERIFIED', calculated_value: recordValue, waste_type: 'Unknown',
                 source: 'MIGRATION', submitted_at: new Date().toISOString(),
-                api_weight: record.totalWeight, confirmed_weight: record.totalWeight
+                api_weight: record.totalWeight, confirmed_weight: record.totalWeight,
+                machine_given_points: recordValue // Ensure this column is populated
             });
-            totalImportedValue += recordValue;
+            
+            if (insertError) {
+                console.error(`❌ Failed to insert record ${putId}:`, insertError.message);
+                // We continue, but log it.
+            } else {
+                totalImportedValue += recordValue;
+            }
         }
     }
 
     // --- E. ADJUSTMENT & SAVE ---
     const adjustmentNeeded = livePoints - totalImportedValue;
 
-    await supabase.from('wallet_transactions').insert({
+    // 2. Insert Transaction (With Error Check)
+    const { error: txError } = await supabase.from('wallet_transactions').insert({
         user_id: user.id, merchant_id: merchantId, amount: adjustmentNeeded,
         type: 'MIGRATION_ADJUSTMENT', status: 'COMPLETED',
         description: adjustmentNeeded < 0 ? 'Legacy System Adjustment' : 'Legacy System Balance'
     });
 
-    await supabase.from('merchant_wallets').upsert({
+    if (txError) {
+        console.error("❌ Failed to insert Wallet Transaction:", txError.message);
+        return res.status(500).json({ error: "DB Error: Could not create transaction. " + txError.message });
+    }
+
+    // 3. Update Wallet (With Error Check)
+    const { error: walletError } = await supabase.from('merchant_wallets').upsert({
         user_id: user.id, merchant_id: merchantId,
         current_balance: livePoints, total_earnings: totalImportedValue
     }, { onConflict: 'user_id, merchant_id' });
+
+    if (walletError) {
+        console.error("❌ Failed to update Wallet:", walletError.message);
+        return res.status(500).json({ error: "DB Error: Could not update wallet. " + walletError.message });
+    }
 
     return res.status(200).json({ success: true, balance: livePoints });
 
@@ -109,11 +123,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// 🟢 HELPER: Uses the corrected variable names
+// Helper (Unchanged)
 async function callAutoGCM(endpoint: string, method: string, data: any) {
     const timestamp = Date.now().toString();
     const sign = crypto.createHash('md5').update(MERCHANT_NO + SECRET + timestamp).digest('hex');
-    
     try {
         const res = await axios({
             url: API_BASE + endpoint, method: method,
@@ -122,15 +135,7 @@ async function callAutoGCM(endpoint: string, method: string, data: any) {
         });
         return res.data;
     } catch (e: any) { 
-        console.error(`❌ AutoGCM Call Failed [${endpoint}]:`);
-        if (e.response) {
-            console.error(`- Status: ${e.response.status}`);
-            console.error(`- Data: ${JSON.stringify(e.response.data)}`);
-        } else if (e.request) {
-            console.error(`- No Response received. Possible Network Error.`);
-        } else {
-            console.error(`- Error Message: ${e.message}`);
-        }
+        console.error(`❌ AutoGCM Call Failed [${endpoint}]:`, e.message);
         return null; 
     }
 }
