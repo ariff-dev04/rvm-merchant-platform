@@ -34,14 +34,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- B. CHECK MIGRATION ---
-    // ✅ FIX: "type" changed to "transaction_type" to match DB Schema
     const { data: existing } = await supabase.from('wallet_transactions')
         .select('id').eq('user_id', user.id).eq('transaction_type', 'MIGRATION_ADJUSTMENT').maybeSingle();
     
     if (existing) return res.status(200).json({ msg: "Already onboarded" });
 
     // --- C. FETCH VENDOR DATA ---
-    // Note: 'nikeName' is the actual key in the vendor API (typo in their system)
     const profile = await callAutoGCM('/api/open/v1/user/account/sync', 'POST', { phone, nikeName: 'User', avatarUrl: '' });
     if (!profile || !profile.data) {
         return res.status(502).json({ error: "Vendor API Connection Failed" });
@@ -53,11 +51,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // --- D. IMPORT HISTORY ---
     let totalImportedValue = 0;
+    let totalImportedWeight = 0; // 🟢 TRACK WEIGHT
     
     // 1. Get Merchant ID
     const { data: merchant, error: merchError } = await supabase.from('merchants').select('id').limit(1).single();
     if (merchError || !merchant) {
-        console.error("❌ DB Error finding merchant:", merchError);
         return res.status(500).json({ error: "Merchant configuration missing in DB" });
     }
     const merchantId = merchant.id;
@@ -66,13 +64,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (const record of historyList) {
         const recordValue = Number(record.integral || 0);
-        const putId = String(record.putId); // or record.id based on API
+        const recordWeight = Number(record.totalWeight || record.weight || 0); // 🟢 Capture Weight
+        const putId = String(record.putId); 
 
         const { data: existingRecord } = await supabase.from('submission_reviews')
             .select('id, status').eq('vendor_record_id', putId).maybeSingle();
 
         if (existingRecord) {
-            if (existingRecord.status === 'VERIFIED') totalImportedValue += recordValue;
+            // Record exists, just add to totals
+            if (existingRecord.status === 'VERIFIED') {
+                totalImportedValue += recordValue;
+                totalImportedWeight += recordWeight;
+            }
         } else {
             // INSERT NEW RECORD
             const { error: insertError } = await supabase.from('submission_reviews').insert({
@@ -84,8 +87,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 waste_type: 'Unknown',
                 source: 'MIGRATION', 
                 submitted_at: new Date(record.createTime || Date.now()).toISOString(),
-                api_weight: record.totalWeight || record.weight, // Fallback for safety
-                confirmed_weight: record.totalWeight || record.weight,
+                api_weight: recordWeight,
+                confirmed_weight: recordWeight,
                 machine_given_points: recordValue
             });
             
@@ -93,17 +96,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 console.error(`❌ Failed to insert record ${putId}:`, insertError.message);
             } else {
                 totalImportedValue += recordValue;
+                totalImportedWeight += recordWeight;
             }
         }
     }
 
     // --- E. ADJUSTMENT & SAVE ---
-    // adjustmentNeeded = (What they have now) - (What we calculated from history)
-    // If negative, they spent points in the old system.
     const adjustmentNeeded = livePoints - totalImportedValue;
 
     // 2. Insert Transaction 
-    // ✅ FIX: Changed 'type' to 'transaction_type'
     const { error: txError } = await supabase.from('wallet_transactions').insert({
         user_id: user.id, 
         merchant_id: merchantId, 
@@ -118,39 +119,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(500).json({ error: "DB Insert Failed: " + txError.message });
     }
 
-    // 3. 🚨 NEW: Record in Withdrawals Table if they spent points
+    // 3. Record in Withdrawals Table if they spent points
     if (adjustmentNeeded < 0) {
-        const withdrawalAmount = Math.abs(adjustmentNeeded); // Must be positive for the withdrawal record
+        const withdrawalAmount = Math.abs(adjustmentNeeded);
         
         console.log(`📝 Recording legacy withdrawal of ${withdrawalAmount} pts`);
 
-        const { error: withdrawError } = await supabase.from('withdrawals').insert({
+        await supabase.from('withdrawals').insert({
              user_id: user.id,
              merchant_id: merchantId,
              amount: withdrawalAmount,
-             status: 'EXTERNAL_SYNC', // Matches the status type you added earlier
+             status: 'EXTERNAL_SYNC', 
              created_at: new Date().toISOString(),
              bank_name: 'Legacy System',
              account_number: 'MIGRATION',
              account_holder_name: profile?.data?.nikeName || 'System Migration'
         });
-
-        if (withdrawError) {
-            console.error("⚠️ Failed to insert Withdrawal record:", withdrawError.message);
-            // We do not fail the request here, as the balance is already corrected above.
-        }
     }
 
     // 4. Update Merchant Wallet
     const { error: walletError } = await supabase.from('merchant_wallets').upsert({
         user_id: user.id, merchant_id: merchantId,
         current_balance: livePoints, 
-        total_earnings: totalImportedValue // Should this include adjustments? Usually yes, but this is raw history sum.
+        total_earnings: totalImportedValue 
     }, { onConflict: 'user_id, merchant_id' });
 
     if (walletError) {
         console.error("❌ Failed to update Wallet:", walletError.message);
         return res.status(500).json({ error: "DB Error: Could not update wallet. " + walletError.message });
+    }
+
+    // --- F. 🚨 CRITICAL: UPDATE USER PROFILE 🚨 ---
+    // This was missing in your code!
+    const { error: userUpdateError } = await supabase.from('users').update({
+        lifetime_integral: livePoints,           // Sets the points
+        total_weight: totalImportedWeight,       // Sets the weight
+        last_synced_at: new Date().toISOString(),
+        nickname: profile?.data?.nikeName || profile?.data?.name || 'User',
+        avatar_url: profile?.data?.imgUrl || null,
+        vendor_user_no: profile?.data?.userNo
+    }).eq('id', user.id);
+
+    if (userUpdateError) {
+         console.error("❌ Failed to update User Profile:", userUpdateError.message);
+         // Log but don't fail, as transactions are already recorded
     }
 
     return res.status(200).json({ success: true, balance: livePoints, migrated: true });
