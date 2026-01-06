@@ -5,13 +5,16 @@ import crypto from 'crypto';
 
 // 🟢 CONFIGURATION
 const supabaseUrl = process.env.VITE_SUPABASE_URL!;
-// ⚠️ IMPORTANT: Use SERVICE_ROLE_KEY to bypass RLS and ensure writes succeed
+
+// ⚠️ CRITICAL: Use the SERVICE_ROLE_KEY to bypass permissions/RLS
+// If you don't have this env var, copy it from your Supabase Dashboard > Settings > API
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY!; 
+
 const SECRET = process.env.VITE_API_SECRET!;        
 const MERCHANT_NO = process.env.VITE_MERCHANT_NO!;
 const API_BASE = "https://api.autogcm.com";
 
-// Init Supabase with Service Key
+// Initialize with Service Key
 const supabase = createClient(supabaseUrl, supabaseServiceKey, {
   auth: { autoRefreshToken: false, persistSession: false }
 });
@@ -55,13 +58,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let totalImportedValue = 0;
     let totalImportedWeight = 0;
     
-    // ⚠️ CRITICAL: Ensure we get the correct Merchant. 
-    // If you have a 'merchant_no' column, uncomment the .eq() part. Otherwise, this picks the first one found.
-    let merchantQuery = supabase.from('merchants').select('id');
-    // if (MERCHANT_NO) merchantQuery = merchantQuery.eq('merchant_no', MERCHANT_NO); 
-    const { data: merchant } = await merchantQuery.limit(1).single();
-    
-    if (!merchant) return res.status(500).json({ error: "Merchant configuration missing in DB" });
+    // Get Merchant ID
+    const { data: merchant } = await supabase.from('merchants').select('id').limit(1).single();
+    if (!merchant) return res.status(500).json({ error: "Merchant configuration missing" });
     const merchantId = merchant.id;
 
     console.log(`Processing ${historyList.length} history items...`);
@@ -71,37 +70,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const recordWeight = Number(record.totalWeight || record.weight || 0);
         const putId = String(record.putId); 
 
-        // Check if record exists (e.g. from Harvester)
+        // 1. Check if record exists (e.g. captured by Harvester)
         const { data: existingRecord } = await supabase.from('submission_reviews')
             .select('id, status').eq('vendor_record_id', putId).maybeSingle();
 
         if (existingRecord) {
-            // ✅ FIX: If record is PENDING, we must VERIFY it and Count it!
+            // ✅ FIX: If record is PENDING, we must FORCE UPDATE it to VERIFIED
             if (existingRecord.status === 'PENDING') {
                 console.log(`🔹 Updating PENDING record ${putId} to VERIFIED`);
+                
                 await supabase.from('submission_reviews').update({
                     status: 'VERIFIED',
                     source: 'MIGRATION',
                     calculated_value: recordValue,
                     confirmed_weight: recordWeight,
                     reviewed_at: new Date().toISOString(),
-                    user_id: user.id // Ensure ownership is correct
+                    user_id: user.id // Ensure ownership
                 }).eq('id', existingRecord.id);
 
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
             } 
             else if (existingRecord.status === 'VERIFIED') {
+                // Already done, just count it
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
             }
         } else {
-            // INSERT NEW RECORD
+            // 2. INSERT NEW RECORD
             const { error: insertError } = await supabase.from('submission_reviews').insert({
                 user_id: user.id, 
                 merchant_id: merchantId, 
                 vendor_record_id: putId,
-                status: 'VERIFIED', // ✅ Force VERIFIED so it shows in history
+                status: 'VERIFIED', // ✅ Force VERIFIED status
                 calculated_value: recordValue, 
                 waste_type: 'Unknown',
                 source: 'MIGRATION', 
@@ -124,7 +125,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const adjustmentNeeded = livePoints - totalImportedValue;
 
     // 1. Transaction Record
-    const { error: txError } = await supabase.from('wallet_transactions').insert({
+    await supabase.from('wallet_transactions').insert({
         user_id: user.id, 
         merchant_id: merchantId, 
         amount: adjustmentNeeded,
@@ -132,8 +133,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         transaction_type: 'MIGRATION_ADJUSTMENT', 
         description: adjustmentNeeded < 0 ? 'Legacy System Adjustment (Spent)' : 'Legacy System Balance'
     });
-
-    if (txError) console.error("❌ Tx Insert Failed:", txError.message);
 
     // 2. Withdrawal Record (if negative)
     if (adjustmentNeeded < 0) {
@@ -160,7 +159,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }, { onConflict: 'user_id, merchant_id' });
 
     // --- F. 🚨 CRITICAL: UPDATE USER PROFILE 🚨 ---
-    // This makes the user point count appear in the Users Table
+    // This updates the user's "Lifetime Integral" and "Total Weight" columns
     const { error: userUpdateError } = await supabase.from('users').update({
         lifetime_integral: livePoints,
         total_weight: totalImportedWeight,
@@ -176,7 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         success: true, 
         balance: livePoints, 
         migrated: true,
-        imported_items: historyList.length 
+        history_items: historyList.length
     });
 
   } catch (error: any) {
@@ -185,7 +184,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// Helper
+// Helper (Unchanged)
 async function callAutoGCM(endpoint: string, method: string, data: any) {
     const timestamp = Date.now().toString();
     const sign = crypto.createHash('md5').update(MERCHANT_NO + SECRET + timestamp).digest('hex');
