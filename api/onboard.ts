@@ -59,23 +59,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     for (const record of historyList) {
         const recordValue = Number(record.integral || 0);
         const recordWeight = Number(record.totalWeight || record.weight || 0);
-        const putId = String(record.putId); 
+        
+        // 🚨 FIX 1: Handle missing/undefined IDs from Vendor API
+        let putId = record.putId ? String(record.putId) : "";
+        
+        // If API gives "undefined" or empty, generate a fallback unique ID (MANUAL-TIMESTAMP-WEIGHT)
+        if (!putId || putId === "undefined" || putId === "null") {
+            const uniqueSuffix = new Date(record.createTime || Date.now()).getTime(); 
+            putId = `MANUAL-${uniqueSuffix}-${Math.floor(recordWeight * 100)}`;
+            debugLog.push({ warning: "Missing putId, generated fallback", newId: putId });
+        }
 
-        // Check Existing
+        // 🚨 FIX 2: Strict check - Must match Vendor ID AND User ID
+        // This prevents matching that one broken "undefined" record belonging to someone else
         const { data: existingRecord } = await supabase.from('submission_reviews')
-            .select('id, status').eq('vendor_record_id', putId).maybeSingle();
+            .select('id, status')
+            .eq('vendor_record_id', putId)
+            .eq('user_id', user.id) // <--- CRITICAL: Only match THIS user's records
+            .maybeSingle();
 
         if (existingRecord) {
              if (existingRecord.status === 'PENDING') {
-                // UPDATE
+                // UPDATE PENDING RECORD
                 const { data: updatedData, error: updateError } = await supabase.from('submission_reviews').update({
                     status: 'VERIFIED',
                     source: 'MIGRATION',
                     calculated_value: recordValue,
                     confirmed_weight: recordWeight,
-                    reviewed_at: new Date().toISOString(),
-                    user_id: user.id 
-                }).eq('id', existingRecord.id).select(); // 👈 .select() returns the row!
+                    reviewed_at: new Date().toISOString()
+                }).eq('id', existingRecord.id).select();
 
                 if (updateError) {
                     debugLog.push({ error: "Update Failed", id: putId, msg: updateError.message });
@@ -85,12 +97,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     totalImportedWeight += recordWeight;
                 }
             } else {
-                debugLog.push({ info: "Already Verified", id: existingRecord.id });
+                // ALREADY VERIFIED
+                debugLog.push({ info: "Already Verified (Correctly)", id: existingRecord.id });
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
             }
         } else {
-            // INSERT
+            // INSERT NEW RECORD
             const { data: insertedData, error: insertError } = await supabase.from('submission_reviews').insert({
                 user_id: user.id, 
                 merchant_id: merchant.id, 
@@ -103,12 +116,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 api_weight: recordWeight,
                 confirmed_weight: recordWeight,
                 machine_given_points: recordValue
-            }).select(); // 👈 .select() is CRITICAL here to prove it wrote
+            }).select();
 
             if (insertError) {
                 debugLog.push({ error: "Insert Failed", id: putId, msg: insertError.message });
             } else {
-                debugLog.push({ success: "Inserted", returned: insertedData }); // 👈 This will show the new ID
+                debugLog.push({ success: "Inserted", returned: insertedData });
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
             }
