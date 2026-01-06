@@ -6,16 +6,15 @@ import crypto from 'crypto';
 // 🟢 CONFIGURATION
 const supabaseUrl = process.env.VITE_SUPABASE_URL!;
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY!;
-const SECRET = process.env.VITE_AUTOGCM_SECRET!;     // Ensure these env vars exist in Backend Vercel
+const SECRET = process.env.VITE_AUTOGCM_SECRET!;
 const MERCHANT_NO = process.env.VITE_AUTOGCM_MERCHANT_NO!;
 const API_BASE = "https://api.autogcm.com";
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // 1. CORS Headers (Allow your Frontend to talk to this Backend)
   res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Or put 'https://your-rvm-web-url.vercel.app'
+  res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -26,6 +25,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     console.log(`🚀 Starting Onboarding for: ${phone}`);
+
+    // 🔍 DEBUG: Check if Keys are Loaded (Do not log the full keys!)
+    if (!SECRET || !MERCHANT_NO) {
+        console.error("❌ CRITICAL ERROR: Environment Variables Missing!");
+        console.error(`- VITE_AUTOGCM_SECRET: ${SECRET ? 'Loaded' : 'MISSING'}`);
+        console.error(`- VITE_AUTOGCM_MERCHANT_NO: ${MERCHANT_NO ? 'Loaded' : 'MISSING'}`);
+        return res.status(500).json({ error: "Server Misconfiguration: Missing API Keys" });
+    }
 
     // --- A. GET USER ---
     const { data: user } = await supabase.from('users').select('id').eq('phone', phone).single();
@@ -40,8 +47,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- C. FETCH VENDOR DATA ---
     // 1. Live Points
     const profile = await callAutoGCM('/api/open/v1/user/account/sync', 'POST', { phone, nikeName: 'User', avatarUrl: '' });
+    
+    // Safety Check with Log
     if (!profile || !profile.data) {
-        console.error("❌ Failed to fetch Vendor Data. Aborting migration to protect user balance.");
+        console.error("❌ Failed to fetch Vendor Data. See logs above for details.");
         return res.status(502).json({ error: "Vendor API Connection Failed" });
     }
     const livePoints = Number(profile?.data?.integral || 0);
@@ -59,14 +68,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const recordValue = Number(record.integral || 0);
         const putId = String(record.putId);
 
-        // Check if we already have this record
         const { data: existingRecord } = await supabase.from('submission_reviews')
             .select('id, status').eq('vendor_record_id', putId).maybeSingle();
 
         if (existingRecord) {
             if (existingRecord.status === 'VERIFIED') totalImportedValue += recordValue;
         } else {
-            // New Record -> Insert as VERIFIED
             await supabase.from('submission_reviews').insert({
                 user_id: user.id, merchant_id: merchantId, vendor_record_id: putId,
                 status: 'VERIFIED', calculated_value: recordValue, waste_type: 'Unknown',
@@ -99,10 +106,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// Helper Function (Same as Proxy Logic)
+// 🟢 NEW DEBUG HELPER (Logs errors instead of hiding them)
 async function callAutoGCM(endpoint: string, method: string, data: any) {
     const timestamp = Date.now().toString();
     const sign = crypto.createHash('md5').update(MERCHANT_NO + SECRET + timestamp).digest('hex');
+    
     try {
         const res = await axios({
             url: API_BASE + endpoint, method: method,
@@ -110,5 +118,20 @@ async function callAutoGCM(endpoint: string, method: string, data: any) {
             [method === 'GET' ? 'params' : 'data']: data
         });
         return res.data;
-    } catch (e) { return null; }
+    } catch (e: any) { 
+        // 🚨 LOG THE REAL ERROR
+        console.error(`❌ AutoGCM Call Failed [${endpoint}]:`);
+        if (e.response) {
+            // The request was made and the server responded with a status code (e.g. 401, 500)
+            console.error(`- Status: ${e.response.status}`);
+            console.error(`- Data: ${JSON.stringify(e.response.data)}`);
+        } else if (e.request) {
+            // The request was made but no response was received
+            console.error(`- No Response received. Possible Network Error.`);
+        } else {
+            // Something happened in setting up the request
+            console.error(`- Error Message: ${e.message}`);
+        }
+        return null; 
+    }
 }
