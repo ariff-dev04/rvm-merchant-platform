@@ -99,7 +99,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         amount: adjustmentNeeded,
         balance_after: livePoints, 
         type: 'MIGRATION_ADJUSTMENT', 
-        status: 'COMPLETED',
         description: adjustmentNeeded < 0 ? 'Legacy System Adjustment' : 'Legacy System Balance'
     });
 
