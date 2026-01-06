@@ -94,14 +94,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 2. Insert Transaction (With Error Check)
     const { error: txError } = await supabase.from('wallet_transactions').insert({
-        user_id: user.id, merchant_id: merchantId, amount: adjustmentNeeded,
-        type: 'MIGRATION_ADJUSTMENT', status: 'COMPLETED',
+    user_id: user.id, 
+        merchant_id: merchantId, 
+        amount: adjustmentNeeded,
+        balance_after: livePoints, 
+        type: 'MIGRATION_ADJUSTMENT', 
+        status: 'COMPLETED',
         description: adjustmentNeeded < 0 ? 'Legacy System Adjustment' : 'Legacy System Balance'
     });
 
     if (txError) {
         console.error("❌ Failed to insert Wallet Transaction:", txError.message);
-        return res.status(500).json({ error: "DB Error: Could not create transaction. " + txError.message });
+        return res.status(500).json({ error: "DB Insert Failed: " + txError.message });
     }
 
     // 3. Update Wallet (With Error Check)
