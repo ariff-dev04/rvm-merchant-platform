@@ -3,16 +3,19 @@ import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 import crypto from 'crypto';
 
-// 🟢 CONFIGURATION
+// 🟢 CONFIGURATION (Updated to match your Vercel Env Vars)
 const supabaseUrl = process.env.VITE_SUPABASE_URL!;
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY!;
-const SECRET = process.env.VITE_AUTOGCM_SECRET!;
-const MERCHANT_NO = process.env.VITE_AUTOGCM_MERCHANT_NO!;
+
+// 👇 FIXED: Using the variable names you confirmed exist in Vercel
+const SECRET = process.env.VITE_API_SECRET!;        
+const MERCHANT_NO = process.env.VITE_MERCHANT_NO!;
 const API_BASE = "https://api.autogcm.com";
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // 1. CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -26,11 +29,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log(`🚀 Starting Onboarding for: ${phone}`);
 
-    // 🔍 DEBUG: Check if Keys are Loaded (Do not log the full keys!)
+    // 🔍 DEBUG: Check if Keys are Loaded
     if (!SECRET || !MERCHANT_NO) {
         console.error("❌ CRITICAL ERROR: Environment Variables Missing!");
-        console.error(`- VITE_AUTOGCM_SECRET: ${SECRET ? 'Loaded' : 'MISSING'}`);
-        console.error(`- VITE_AUTOGCM_MERCHANT_NO: ${MERCHANT_NO ? 'Loaded' : 'MISSING'}`);
+        console.error(`- VITE_API_SECRET: ${SECRET ? 'Loaded' : 'MISSING'}`);
+        console.error(`- VITE_MERCHANT_NO: ${MERCHANT_NO ? 'Loaded' : 'MISSING'}`);
         return res.status(500).json({ error: "Server Misconfiguration: Missing API Keys" });
     }
 
@@ -48,7 +51,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 1. Live Points
     const profile = await callAutoGCM('/api/open/v1/user/account/sync', 'POST', { phone, nikeName: 'User', avatarUrl: '' });
     
-    // Safety Check with Log
+    // Safety Check
     if (!profile || !profile.data) {
         console.error("❌ Failed to fetch Vendor Data. See logs above for details.");
         return res.status(502).json({ error: "Vendor API Connection Failed" });
@@ -106,7 +109,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// 🟢 NEW DEBUG HELPER (Logs errors instead of hiding them)
+// 🟢 HELPER: Uses the corrected variable names
 async function callAutoGCM(endpoint: string, method: string, data: any) {
     const timestamp = Date.now().toString();
     const sign = crypto.createHash('md5').update(MERCHANT_NO + SECRET + timestamp).digest('hex');
@@ -119,17 +122,13 @@ async function callAutoGCM(endpoint: string, method: string, data: any) {
         });
         return res.data;
     } catch (e: any) { 
-        // 🚨 LOG THE REAL ERROR
         console.error(`❌ AutoGCM Call Failed [${endpoint}]:`);
         if (e.response) {
-            // The request was made and the server responded with a status code (e.g. 401, 500)
             console.error(`- Status: ${e.response.status}`);
             console.error(`- Data: ${JSON.stringify(e.response.data)}`);
         } else if (e.request) {
-            // The request was made but no response was received
             console.error(`- No Response received. Possible Network Error.`);
         } else {
-            // Something happened in setting up the request
             console.error(`- Error Message: ${e.message}`);
         }
         return null; 
