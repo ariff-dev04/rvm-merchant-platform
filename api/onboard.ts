@@ -14,6 +14,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
 });
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // CORS setup...
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -24,15 +25,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: 'Phone is required' });
 
-  const debugLog: any[] = []; // 🔍 We will collect proof here
+  const debugLog: any[] = []; 
 
   try {
     // 1. Get User
     const { data: user } = await supabase.from('users').select('id, phone').eq('phone', phone).single();
     if (!user) return res.status(404).json({ error: 'User not found in DB' });
     
-    debugLog.push({ step: "User Found", userId: user.id });
-
     // 2. Check Migration
     const { data: existing } = await supabase.from('wallet_transactions')
         .select('id').eq('user_id', user.id).eq('transaction_type', 'MIGRATION_ADJUSTMENT').maybeSingle();
@@ -43,67 +42,89 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!profile || !profile.data) return res.status(502).json({ error: "Vendor API Failed" });
     const livePoints = Number(profile?.data?.integral || 0);
 
-    const historyRes = await callAutoGCM('/api/open/v1/put', 'GET', { phone, pageNum: 1, pageSize: 100 });
-    const historyList = historyRes?.data?.list || [];
+    // 4. 🔥 FETCH HISTORY (With Loop & Date Range)
+    let historyList: any[] = [];
+    let pageNum = 1;
+    const pageSize = 100; // Max allowed usually
+    let hasNext = true;
 
-    // 4. Get Merchant
+    // Date Range: 2020-01-01 to Today
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    
+    console.log(`📡 Fetching history for ${phone}...`);
+    
+    while (hasNext) {
+        const res = await callAutoGCM('/api/open/v1/put', 'GET', { 
+            phone, 
+            pageNum, 
+            pageSize,
+            startTime: '2020-01-01', 
+            endTime: todayStr
+        });
+
+        const list = res?.data?.list || [];
+        if (list.length > 0) {
+            historyList = [...historyList, ...list];
+            debugLog.push({ step: `Fetched Page ${pageNum}`, count: list.length });
+            
+            // Check if we reached the last page
+            const total = res?.data?.total || 0;
+            if (historyList.length >= total || list.length < pageSize) {
+                hasNext = false;
+            } else {
+                pageNum++;
+            }
+        } else {
+            hasNext = false;
+        }
+    }
+
+    debugLog.push({ step: "Fetch Complete", totalItems: historyList.length });
+
+    // 5. Get Merchant
     const { data: merchant } = await supabase.from('merchants').select('id').limit(1).single();
     if (!merchant) return res.status(500).json({ error: "Merchant missing" });
-    
-    debugLog.push({ step: "Merchant Found", merchantId: merchant.id });
 
     let totalImportedValue = 0;
     let totalImportedWeight = 0;
 
-    // 5. PROCESS LOOP
+    // 6. PROCESS LOOP (With your undefined ID fix)
     for (const record of historyList) {
         const recordValue = Number(record.integral || 0);
         const recordWeight = Number(record.totalWeight || record.weight || 0);
         
-        // 🚨 FIX 1: Handle missing/undefined IDs from Vendor API
         let putId = record.putId ? String(record.putId) : "";
-        
-        // If API gives "undefined" or empty, generate a fallback unique ID (MANUAL-TIMESTAMP-WEIGHT)
         if (!putId || putId === "undefined" || putId === "null") {
             const uniqueSuffix = new Date(record.createTime || Date.now()).getTime(); 
-            putId = `MANUAL-${uniqueSuffix}-${Math.floor(recordWeight * 100)}`;
-            debugLog.push({ warning: "Missing putId, generated fallback", newId: putId });
+            // Add randomness to prevent collision if multiple items have same timestamp
+            putId = `MANUAL-${uniqueSuffix}-${Math.floor(recordWeight * 100)}-${Math.random().toString(36).substring(7)}`;
+            debugLog.push({ warning: "Generated fallback ID", newId: putId });
         }
 
-        // 🚨 FIX 2: Strict check - Must match Vendor ID AND User ID
-        // This prevents matching that one broken "undefined" record belonging to someone else
         const { data: existingRecord } = await supabase.from('submission_reviews')
             .select('id, status')
             .eq('vendor_record_id', putId)
-            .eq('user_id', user.id) // <--- CRITICAL: Only match THIS user's records
+            .eq('user_id', user.id) // Strict check
             .maybeSingle();
 
         if (existingRecord) {
              if (existingRecord.status === 'PENDING') {
-                // UPDATE PENDING RECORD
-                const { data: updatedData, error: updateError } = await supabase.from('submission_reviews').update({
+                const { data: updatedData } = await supabase.from('submission_reviews').update({
                     status: 'VERIFIED',
                     source: 'MIGRATION',
                     calculated_value: recordValue,
                     confirmed_weight: recordWeight,
                     reviewed_at: new Date().toISOString()
                 }).eq('id', existingRecord.id).select();
-
-                if (updateError) {
-                    debugLog.push({ error: "Update Failed", id: putId, msg: updateError.message });
-                } else {
-                    debugLog.push({ success: "Updated", id: existingRecord.id, returned: updatedData });
-                    totalImportedValue += recordValue;
-                    totalImportedWeight += recordWeight;
-                }
+                
+                totalImportedValue += recordValue;
+                totalImportedWeight += recordWeight;
             } else {
-                // ALREADY VERIFIED
-                debugLog.push({ info: "Already Verified (Correctly)", id: existingRecord.id });
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
             }
         } else {
-            // INSERT NEW RECORD
             const { data: insertedData, error: insertError } = await supabase.from('submission_reviews').insert({
                 user_id: user.id, 
                 merchant_id: merchant.id, 
@@ -121,7 +142,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (insertError) {
                 debugLog.push({ error: "Insert Failed", id: putId, msg: insertError.message });
             } else {
-                debugLog.push({ success: "Inserted", returned: insertedData });
                 totalImportedValue += recordValue;
                 totalImportedWeight += recordWeight;
             }
@@ -171,7 +191,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         success: true, 
         balance: livePoints, 
         migrated: true,
-        debug_log: debugLog // 👈 The most important part
+        debug_log: debugLog 
     });
 
   } catch (error: any) {
