@@ -44,28 +44,33 @@ export function useUserList() {
         // 6. Map Data
         // 6. Map Data
         users.value = data.map(u => {
-            let currentBalance = 0;
-            let totalEarnings = 0;
+        let currentBalance = 0;
+        let totalEarnings = 0;
+        let specificWeight = 0; // <--- NEW VARIABLE
 
-            if (auth.merchantId) {
-                // Specific Merchant: Only show money for THIS merchant
-                const wallet = u.merchant_wallets?.find((w: any) => w.merchant_id === auth.merchantId);
-                currentBalance = wallet ? Number(wallet.current_balance) : 0;
-                totalEarnings = wallet ? Number(wallet.total_earnings) : 0;
-            } else {
-                // 🔥 PLATFORM OWNER FIX: Sum up ALL wallets
-                if (u.merchant_wallets && Array.isArray(u.merchant_wallets)) {
-                    currentBalance = u.merchant_wallets.reduce((sum: number, w: any) => sum + Number(w.current_balance || 0), 0);
-                    totalEarnings = u.merchant_wallets.reduce((sum: number, w: any) => sum + Number(w.total_earnings || 0), 0);
-                }
+        if (auth.merchantId) {
+            // 🏪 MERCHANT VIEW: Only show data for THIS merchant
+            const wallet = u.merchant_wallets?.find((w: any) => w.merchant_id === auth.merchantId);
+            
+            currentBalance = wallet ? Number(wallet.current_balance) : 0;
+            totalEarnings = wallet ? Number(wallet.total_earnings) : 0;
+            specificWeight = wallet ? Number(wallet.total_weight) : 0; // <--- Read Wallet Weight
+        } else {
+            // 👑 SUPER ADMIN VIEW: Sum up ALL wallets
+            if (u.merchant_wallets && Array.isArray(u.merchant_wallets)) {
+                currentBalance = u.merchant_wallets.reduce((sum: number, w: any) => sum + Number(w.current_balance || 0), 0);
+                totalEarnings = u.merchant_wallets.reduce((sum: number, w: any) => sum + Number(w.total_earnings || 0), 0);
+                specificWeight = u.merchant_wallets.reduce((sum: number, w: any) => sum + Number(w.total_weight || 0), 0); // <--- Sum Wallet Weights
             }
+        }
 
-            return {
-                ...u,
-                balance: currentBalance,
-                earnings: totalEarnings
-            };
-        });
+        return {
+            ...u,
+            balance: currentBalance,
+            earnings: totalEarnings,
+            total_weight: specificWeight // <--- OVERRIDE the global weight with the specific one
+        };
+    });
 
     } catch (err: any) {
         console.error('Error fetching users:', err.message);
