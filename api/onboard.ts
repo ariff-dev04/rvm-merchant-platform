@@ -3,7 +3,9 @@ import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 import crypto from 'crypto';
 
+// 🟢 CONFIGURATION
 const supabaseUrl = process.env.VITE_SUPABASE_URL!;
+// ⚠️ Use Service Role Key to bypass RLS and ensure writes
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY!; 
 const SECRET = process.env.VITE_API_SECRET!;        
 const MERCHANT_NO = process.env.VITE_MERCHANT_NO!;
@@ -14,7 +16,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
 });
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS setup...
+  // CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -45,7 +47,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 4. 🔥 FETCH HISTORY (With Loop & Date Range)
     let historyList: any[] = [];
     let pageNum = 1;
-    const pageSize = 100; // Max allowed usually
+    const pageSize = 100;
     let hasNext = true;
 
     // Date Range: 2020-01-01 to Today
@@ -66,8 +68,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const list = res?.data?.list || [];
         if (list.length > 0) {
             historyList = [...historyList, ...list];
-            debugLog.push({ step: `Fetched Page ${pageNum}`, count: list.length });
-            
             // Check if we reached the last page
             const total = res?.data?.total || 0;
             if (historyList.length >= total || list.length < pageSize) {
@@ -89,27 +89,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let totalImportedValue = 0;
     let totalImportedWeight = 0;
 
-    // 6. PROCESS LOOP (Fixed ID mapping)
+    // 6. PROCESS LOOP
     for (const record of historyList) {
         const recordValue = Number(record.integral || 0);
         const recordWeight = Number(record.totalWeight || record.weight || 0);
         
-        // 🚨 FIX: The API returns 'id', not 'putId'. We check both to be safe.
-        // We also handle the case where ID might be a number, so we wrap in String()
+        // --- A. EXTRACT FIELDS ---
+        const deviceNo = record.deviceNo || null;
+        const recordPhone = record.phonenumber || null; 
+        
+        let photoUrl = null;
+        // Parse comma-separated images if present
+        if (record.imgUrl) photoUrl = record.imgUrl.split(',')[0];
+        
+        let wasteType = 'Unknown';
+
+        // Extract detailed info if available
+        if (record.rubbishLogDetailsVOList && record.rubbishLogDetailsVOList.length > 0) {
+            const detail = record.rubbishLogDetailsVOList[0];
+            if (detail.rubbishName) wasteType = detail.rubbishName;
+            // Prefer detail image if root image is empty
+            if (!photoUrl && detail.imgUrl) photoUrl = detail.imgUrl;
+        }
+
+        // --- B. CALCULATE RATE (Points / Weight) ---
+        // We calculate this ourselves to ensure accuracy
+        let ratePerKg = 0;
+        if (recordWeight > 0) {
+            // e.g. 1.05 pts / 3.51 kg = 0.299... -> 0.30
+            ratePerKg = Number((recordValue / recordWeight).toFixed(3)); 
+        }
+
+        // --- C. ID LOGIC (Fixing the undefined bug) ---
         let rawId = record.id || record.putId;
         let putId = rawId ? String(rawId) : "";
         
-        // Fallback only if absolutely no ID is found
         if (!putId || putId === "undefined" || putId === "null") {
             const uniqueSuffix = new Date(record.createTime || Date.now()).getTime(); 
             putId = `MANUAL-${uniqueSuffix}-${Math.floor(recordWeight * 100)}-${Math.random().toString(36).substring(7)}`;
             debugLog.push({ warning: "Generated fallback ID", newId: putId });
         }
 
+        // --- D. DB OPERATIONS ---
         const { data: existingRecord } = await supabase.from('submission_reviews')
             .select('id, status')
             .eq('vendor_record_id', putId)
-            .eq('user_id', user.id)
+            .eq('user_id', user.id) // Strict check
             .maybeSingle();
 
         if (existingRecord) {
@@ -119,7 +144,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     source: 'MIGRATION',
                     calculated_value: recordValue,
                     confirmed_weight: recordWeight,
-                    reviewed_at: new Date().toISOString()
+                    reviewed_at: new Date().toISOString(),
+                    // Update missing fields
+                    device_no: deviceNo,
+                    waste_type: wasteType,
+                    photo_url: photoUrl,
+                    phone: recordPhone,
+                    rate_per_kg: ratePerKg
                 }).eq('id', existingRecord.id).select();
                 
                 totalImportedValue += recordValue;
@@ -135,12 +166,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 vendor_record_id: putId,
                 status: 'VERIFIED',
                 calculated_value: recordValue, 
-                waste_type: 'Unknown',
+                waste_type: wasteType,
                 source: 'MIGRATION', 
                 submitted_at: new Date(record.createTime || Date.now()).toISOString(),
                 api_weight: recordWeight,
                 confirmed_weight: recordWeight,
-                machine_given_points: recordValue
+                machine_given_points: recordValue,
+                // Insert missing fields
+                device_no: deviceNo,
+                photo_url: photoUrl,
+                phone: recordPhone,
+                rate_per_kg: ratePerKg
             }).select();
 
             if (insertError) {
