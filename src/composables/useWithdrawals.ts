@@ -1,6 +1,6 @@
 import { ref } from 'vue';
 import { supabase } from '../services/supabase';
-import { syncUserAccount } from '../services/autogcm';
+//import { syncUserAccount } from '../services/autogcm';
 import { WithdrawalStatus, type Withdrawal } from '../types';
 import { useAuthStore } from '../stores/auth';
 
@@ -77,42 +77,58 @@ export function useWithdrawals() {
 
   // 3. Hybrid Balance Check
   const checkBalance = async (withdrawal: Withdrawal) => {
-    // Safety check for user phone
-    const userPhone = withdrawal.users?.phone;
-    if (!userPhone) {
-      alert("Error: User phone number not found.");
-      return;
-    }
+    const auth = useAuthStore();
+    const userId = withdrawal.user_id;
 
     checkingBalanceId.value = withdrawal.id;
     balanceResult.value = null;
 
     try {
-      // A. Get Live API Points (This is the CURRENT Available Balance)
-      const apiResponse: any = await syncUserAccount(userPhone);
-      const currentLiveBalance = Number(apiResponse.integral || 0);
+      // 1. Define the scope (Specific Merchant vs Global)
+      const targetMerchantId = auth.merchantId || withdrawal.merchant_id;
 
-      // B. Get DB Spent (Total Redeemed)
-      const { data: history } = await supabase
+      // 2. Fetch Total Earnings from THIS Merchant (Source of Truth)
+      // We look at submission_reviews to see how much recycling they did here.
+      let earningsQuery = supabase
+        .from('submission_reviews')
+        .select('machine_given_points')
+        .eq('user_id', userId)
+        .neq('status', 'REJECTED'); // Valid recycles only
+
+      if (targetMerchantId) {
+        earningsQuery = earningsQuery.eq('merchant_id', targetMerchantId);
+      }
+
+      const { data: earningsData } = await earningsQuery;
+      const totalEarned = (earningsData || []).reduce((sum, r) => sum + Number(r.machine_given_points || 0), 0);
+
+      // 3. Fetch Total Withdrawals from THIS Merchant
+      let withdrawalsQuery = supabase
         .from('withdrawals')
-        .select('amount, status')
-        .eq('user_id', withdrawal.user_id);
+        .select('amount')
+        .eq('user_id', userId)
+        .neq('status', 'REJECTED'); // Valid withdrawals only
 
-      const totalSpent = (history || [])
-        .filter(w => w.status !== WithdrawalStatus.REJECTED)
-        .reduce((sum, w) => sum + Number(w.amount), 0);
+      if (targetMerchantId) {
+        withdrawalsQuery = withdrawalsQuery.eq('merchant_id', targetMerchantId);
+      }
 
-      // C. Calculate Lifetime (Current + Spent)
-      const estimatedLifetime = currentLiveBalance + totalSpent;
+      const { data: withdrawalsData } = await withdrawalsQuery;
+      const totalWithdrawn = (withdrawalsData || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
+
+      // 4. Calculate Available Balance for THIS Merchant
+      const availableBalance = totalEarned - totalWithdrawn;
 
       balanceResult.value = {
         id: withdrawal.id,
-        available: currentLiveBalance, // ✅ Correct: Directly from API
-        lifetime: estimatedLifetime,   // ✅ Correct: Calculated total
-        spent: totalSpent
+        available: Number(availableBalance.toFixed(2)), 
+        lifetime: Number(totalEarned.toFixed(2)),
+        spent: Number(totalWithdrawn.toFixed(2))
       };
+
     } catch (error: any) {
-      alert(`API Error: ${error.message || "Unknown"}`);
+      alert(`Audit Error: ${error.message || "Unknown"}`);
+      console.error(error);
     } finally {
       checkingBalanceId.value = null;
     }
