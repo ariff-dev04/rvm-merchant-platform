@@ -109,9 +109,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // --- FIX END ---
 
-    let totalImportedValue = 0;
-    let totalImportedWeight = 0;
-
     // 6. PROCESS LOOP
     for (const record of historyList) {
         const recordValue = Number(record.integral || 0);
