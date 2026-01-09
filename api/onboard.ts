@@ -9,6 +9,12 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.
 const SECRET = process.env.VITE_API_SECRET!;        
 const MERCHANT_NO = process.env.VITE_MERCHANT_NO!;
 const API_BASE = "https://api.autogcm.com";
+// Helper to silence logs in production
+const log = (...args: any[]) => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(...args);
+  }
+};
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey, {
   auth: { autoRefreshToken: false, persistSession: false }
@@ -50,7 +56,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     
-    console.log(`📡 Fetching history for ${phone}...`);
+    log(`📡 Fetching history for ${phone}...`);
     
     while (hasNext) {
         const res = await callAutoGCM('/api/open/v1/put', 'GET', { 
@@ -278,11 +284,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         vendor_user_no: profile?.data?.userNo
     }).eq('id', user.id);
 
+    const isProduction = process.env.NODE_ENV === 'production';
     return res.status(200).json({ 
         success: true, 
         balance: livePoints, 
         migrated: true,
-        debug_log: debugLog 
+        debug_log: isProduction ? undefined : debugLog
     });
 
   } catch (error: any) {
