@@ -163,9 +163,9 @@ export function useSubmissionReviews() {
 
     const verifySubmission = async (reviewId: string, finalWeight: number, currentRate: number) => {
         try {
+            // This line was already good, keep it!
             const finalPoints = parseFloat((finalWeight * currentRate).toFixed(2));
 
-            // 1. GET DETAILS (We need user_id and merchant_id to pay the right person)
             const { data: review, error: fetchError } = await supabase
                 .from('submission_reviews')
                 .select('user_id, merchant_id')
@@ -190,7 +190,7 @@ export function useSubmissionReviews() {
             // 3. CREDIT MERCHANT WALLET (The Money Part)
             const { data: wallet } = await supabase
                 .from('merchant_wallets')
-                .select('id, current_balance, total_earnings, total_weight') // CHANGED: Select total_weight
+                .select('id, current_balance, total_earnings, total_weight')
                 .eq('user_id', review.user_id)
                 .eq('merchant_id', review.merchant_id)
                 .maybeSingle();
@@ -198,23 +198,29 @@ export function useSubmissionReviews() {
             let newBalance = finalPoints;
 
             if (wallet) {
-                newBalance = Number(wallet.current_balance) + finalPoints;
-                // Update existing wallet
+                // 🟢 FIX 2: Rounding during addition
+                // JavaScript: 10.1 + 1.1 = 11.2000000000001
+                newBalance = Number((Number(wallet.current_balance) + finalPoints).toFixed(2));
+                
+                const newTotalEarnings = Number((Number(wallet.total_earnings) + finalPoints).toFixed(2));
+                const newTotalWeight = Number((Number(wallet.total_weight || 0) + finalWeight).toFixed(3)); // Weight to 3 decimals
+
                 await supabase.from('merchant_wallets').update({
                     current_balance: newBalance,
-                    total_earnings: Number(wallet.total_earnings) + finalPoints,
-                    total_weight: Number(wallet.total_weight || 0) + finalWeight // CHANGED: Add weight here
+                    total_earnings: newTotalEarnings,
+                    total_weight: newTotalWeight
                 }).eq('id', wallet.id);
             } else {
-                // Create new wallet if first time
+                // Create new wallet
                 await supabase.from('merchant_wallets').insert({
                     user_id: review.user_id,
                     merchant_id: review.merchant_id,
                     current_balance: finalPoints,
                     total_earnings: finalPoints,
-                    total_weight: finalWeight // 👈 CHANGED: Insert initial weight
+                    total_weight: finalWeight
                 });
             }
+
             // 4. LOG TRANSACTION (The Audit Trail)
             await supabase.from('wallet_transactions').insert({
                 user_id: review.user_id,
@@ -225,7 +231,7 @@ export function useSubmissionReviews() {
                 description: `Recycled ${finalWeight}kg (Verified)`
             });
 
-            // 5. UPDATE USER STATS (The Profile Totals)
+            // 5. UPDATE USER STATS
             const { data: user } = await supabase
                 .from('users')
                 .select('lifetime_integral, total_weight')
@@ -233,9 +239,13 @@ export function useSubmissionReviews() {
                 .single();
 
             if (user) {
+                // 🟢 FIX 3: Round User Totals too
+                const newLifetime = Number(((Number(user.lifetime_integral) || 0) + finalPoints).toFixed(2));
+                const newTotalWeight = Number(((Number(user.total_weight) || 0) + finalWeight).toFixed(3));
+
                 await supabase.from('users').update({
-                    lifetime_integral: (Number(user.lifetime_integral) || 0) + finalPoints,
-                    total_weight: (Number(user.total_weight) || 0) + finalWeight
+                    lifetime_integral: newLifetime,
+                    total_weight: newTotalWeight
                 }).eq('id', review.user_id);
             }
 

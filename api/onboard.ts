@@ -177,10 +177,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     merchant_id: correctMerchantId // ✅ Use Correct Merchant
                 }).eq('id', existingRecord.id);
                 
-                totalImportedValue += recordValue;
+                totalImportedValue = Number((totalImportedValue + recordValue).toFixed(2));
                 totalImportedWeight += recordWeight;
             } else {
-                totalImportedValue += recordValue;
+                totalImportedValue = Number((totalImportedValue + recordValue).toFixed(2));
                 totalImportedWeight += recordWeight;
             }
         } else {
@@ -205,26 +205,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (insertError) {
                 debugLog.push({ error: "Insert Failed", id: putId, msg: insertError.message });
             } else {
-                totalImportedValue += recordValue;
+                totalImportedValue = Number((totalImportedValue + recordValue).toFixed(2));
                 totalImportedWeight += recordWeight;
             }
         }
     }
 
     // --- E. ADJUSTMENT & SAVE ---
-    // Note: The adjustment transaction is assigned to the FALLBACK merchant 
-    // because it's a global balance correction, not specific to one machine.
-    const adjustmentNeeded = livePoints - totalImportedValue;
+    
+    // 🟢 FIX: Round to 2 decimal places to ignore floating point dust
+    // Before: 0.31 - 0.31000000000000005 = -5.55e-17 (Triggers spending logic)
+    // After:  Number((-5.55e-17).toFixed(2)) = 0 (Correct!)
+    const adjustmentNeeded = Number((livePoints - totalImportedValue).toFixed(2));
 
-    await supabase.from('wallet_transactions').insert({
-        user_id: user.id, 
-        merchant_id: fallbackMerchantId, 
-        amount: adjustmentNeeded,
-        balance_after: livePoints, 
-        transaction_type: 'MIGRATION_ADJUSTMENT', 
-        description: adjustmentNeeded < 0 ? 'Legacy System Adjustment (Spent)' : 'Legacy System Balance'
-    });
+    // Only log transaction if there is a real difference
+    if (adjustmentNeeded !== 0) {
+        await supabase.from('wallet_transactions').insert({
+            user_id: user.id, 
+            merchant_id: fallbackMerchantId, 
+            amount: adjustmentNeeded,
+            balance_after: livePoints, 
+            transaction_type: 'MIGRATION_ADJUSTMENT', 
+            description: adjustmentNeeded < 0 ? 'Legacy System Adjustment (Spent)' : 'Legacy System Balance'
+        });
+    }
 
+    // Only create withdrawal if user actually owes money (Real negative balance)
     if (adjustmentNeeded < 0) {
         await supabase.from('withdrawals').insert({
              user_id: user.id,

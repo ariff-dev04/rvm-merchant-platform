@@ -70,7 +70,6 @@ export const runHarvester = async () => {
                 let rate = 0;
                 const typeKey = wasteType.toLowerCase();
 
-                // Logic: Check type keywords against what the machine is configured for
                 if (typeKey.includes('paper') || typeKey.includes('kertas')) {
                     rate = Number(machine.rate_paper || 0);
                 } 
@@ -84,9 +83,10 @@ export const runHarvester = async () => {
                     rate = Number(machine.rate_can || 0);
                 }
 
-                const calculatedValue = weight * rate;
+                // FIX 1: ROUND HERE IMMEDIATELY
+                const calculatedValue = Number((weight * rate).toFixed(2));
 
-                console.log(`   ✨ NEW: ${weight}kg ${wasteType} @ Machine Rate ${rate} = ${calculatedValue.toFixed(2)}`);
+                console.log(`   ✨ NEW: ${weight}kg ${wasteType} @ Machine Rate ${rate} = ${calculatedValue}`);
 
                 await supabase.from('submission_reviews').insert({
                     vendor_record_id: record.id,
