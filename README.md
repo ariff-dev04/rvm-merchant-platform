@@ -91,6 +91,7 @@ VERCEL_OIDC_TOKEN=...
 ```
 npm run dev
 ```
+---
 
 ### 🔌 API Integration
 This platform acts as a bridge between the Supabase Database (internal user data) and the RVM Hardware API (external machine data).
@@ -118,6 +119,8 @@ Proxy: To avoid CORS issues and secure credentials, API calls are routed through
 | **Real-time Events** | `/api/open/v1/subscription` | `PUT` | **Set Webhook:** Registers your server URL to receive real-time push notifications (e.g., bin full, new deposit). |
 | | `/api/open/v1/subscription` | `GET` | **Check Webhook:** Queries the currently configured notification URL. |
 
+---
+
 ### 🚢 Deployment
 The project is optimized for deployment on Vercel.
 
@@ -128,6 +131,8 @@ Import the project in Vercel.
 Add the Environment Variables (from step 3 above) in the Vercel Project Settings.
 
 Deploy! 🚀
+
+---
 
 ### 📄 License
 This project is proprietary software developed for HMA Digital Systems. Unauthorized copying or distribution is strictly prohibited.
