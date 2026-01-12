@@ -93,7 +93,7 @@ npm run dev
 ```
 ---
 
-### 🔌 API Integration
+## 🔌 API Integration
 This platform acts as a bridge between the Supabase Database (internal user data) and the RVM Hardware API (external machine data).
 
 External API Details
@@ -121,7 +121,7 @@ Proxy: To avoid CORS issues and secure credentials, API calls are routed through
 
 ---
 
-### 🚢 Deployment
+## 🚢 Deployment
 The project is optimized for deployment on Vercel.
 
 Push your code to GitHub.
@@ -134,5 +134,5 @@ Deploy! 🚀
 
 ---
 
-### 📄 License
+## 📄 License
 This project is proprietary software developed for HMA Digital Systems. Unauthorized copying or distribution is strictly prohibited.
