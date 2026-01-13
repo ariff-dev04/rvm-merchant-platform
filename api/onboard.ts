@@ -291,25 +291,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Only use Vendor name if local is "New User", "RVM User", or missing.
+    // 1. Determine Name: Trust Local DB if valid, otherwise fallback to Vendor
     const currentName = user.nickname;
-    const shouldUseLocalName = currentName && currentName !== 'New User' && currentName !== 'RVM User';
+    const isLocalNameValid = currentName && currentName !== 'New User' && currentName !== 'RVM User';
     
-    const finalNickname = shouldUseLocalName 
-        ? currentName 
-        : (profile?.data?.nikeName || profile?.data?.name || 'User');
+    const finalNickname = isLocalNameValid 
+        ? currentName // Keep "Google Name"
+        : (profile?.data?.nikeName || profile?.data?.name || 'User'); // Fallback
 
-    // Only use Vendor Avatar if local is missing
+    // 2. Determine Avatar: Trust Local DB if valid
     const finalAvatar = user.avatar_url 
         ? user.avatar_url 
         : (profile?.data?.imgUrl || profile?.data?.avatarUrl);
 
+    // 3. Update DB
     await supabase.from('users').update({
         lifetime_integral: livePoints,
         total_weight: Number(totalImportedWeight.toFixed(2)),
         last_synced_at: new Date().toISOString(),
-        nickname: finalNickname, // ✅ Uses Google Name if available
+        nickname: finalNickname, 
         vendor_user_no: profile?.data?.userNo,
-        avatar_url: finalAvatar  // ✅ Uses Google Photo if available
+        avatar_url: finalAvatar
     }).eq('id', user.id);
 
     const isProduction = process.env.NODE_ENV === 'production';
