@@ -93,10 +93,11 @@ export function useSubmissionReviews() {
         }
     };
 
-    const harvestNewSubmissions = async () => {
+    const harvestNewSubmissions = async (force = false) => {
         isHarvesting.value = true;
         try {
-            await runHarvester();
+            // Pass the force flag to the service
+            await runHarvester(force);
             await fetchReviews();
         } catch (err) {
             console.error("Harvest failed:", err);

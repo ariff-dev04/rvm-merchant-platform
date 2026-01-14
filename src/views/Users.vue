@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import { RouterLink } from 'vue-router';
 import { useUserList } from '../composables/useUserList';
-import { ChevronRight, Smartphone, Scale, Search, UserPlus, Wallet } from 'lucide-vue-next';
+import { ChevronRight, Smartphone, Scale, Search, DownloadCloud, Wallet } from 'lucide-vue-next';
 
 // Components
 import SimpleConfirmModal from '../components/SimpleConfirmModal.vue';
@@ -10,7 +10,7 @@ import UserAdjustBalanceModal from '../components/UserAdjustBalanceModal.vue';
 import UserCreateModal from '../components/UserCreateModal.vue';
 
 // Logic
-const { users, loading, isSubmitting, adjustBalance, createTestUser } = useUserList();
+const { users, loading, isSubmitting, adjustBalance, importUser } = useUserList();
 const searchQuery = ref('');
 
 // --- MODAL STATES ---
@@ -51,12 +51,14 @@ const handleAdjustmentConfirm = async (payload: { userId: string, amount: number
 
 // Handle event from Child Component
 const handleCreateUserConfirm = async (payload: { nickname: string, phone: string }) => {
-    const res = await createTestUser(payload.nickname, payload.phone);
+    // Call the new Import logic
+    const res = await importUser(payload.nickname, payload.phone);
+    
     if (res?.success) {
         showCreateModal.value = false;
-        triggerFeedback('Success', 'Test User Created!', false);
+        triggerFeedback('Success', 'User Imported & Synced!', false);
     } else {
-        triggerFeedback('Error', res?.error || 'Creation failed', true);
+        triggerFeedback('Error', res?.error || 'Import failed', true);
     }
 };
 
@@ -83,8 +85,9 @@ const handleImageError = (e: Event) => {
             <Search class="absolute left-3 top-2.5 text-gray-400" :size="20"/>
             <input v-model="searchQuery" placeholder="Search users by name or phone..." class="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all"/>
         </div>
+        
         <button @click="showCreateModal = true" class="flex items-center gap-2 bg-gray-900 text-white px-4 py-2.5 rounded-xl hover:bg-gray-800 text-sm font-bold transition-all shadow-lg active:scale-95">
-            <UserPlus :size="18" /> New Test User
+            <DownloadCloud :size="18" /> Import User
         </button>
     </div>
 

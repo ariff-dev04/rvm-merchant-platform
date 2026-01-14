@@ -1,6 +1,7 @@
 import { ref, onMounted } from 'vue';
 import { supabase } from '../services/supabase';
 import { useAuthStore } from '../stores/auth';
+import axios from 'axios';
 
 export function useUserList() {
   const auth = useAuthStore();
@@ -174,41 +175,54 @@ export function useUserList() {
 
   
   // 3. Create Test User (Updated)
-  const createTestUser = async (nickname: string, phone: string) => {
+  // 3. Import User (Replaces createTestUser)
+  const importUser = async (nickname: string, phone: string) => {
       isSubmitting.value = true;
       try {
-          // A. Create User (or ignore if phone exists)
+          // A. Create/Ensure User Exists in DB
+          // We set is_active: true so they are ready to go.
           const { data: newUser, error: uError } = await supabase
               .from('users')
               .upsert({ 
                   phone, 
                   nickname, 
                   is_active: true,
-                  vendor_user_no: 'TEST-' + Math.floor(Math.random() * 100000)
+                  // We let the onboarding script fill in the vendor_user_no
               }, { onConflict: 'phone' })
               .select()
               .single();
 
           if (uError) throw uError;
 
-          // B. Create Wallet for THIS Merchant (So they appear in the list)
-          const { error: wError } = await supabase
-              .from('merchant_wallets')
-              .insert({
-                  user_id: newUser.id,
-                  merchant_id: auth.merchantId,
-                  current_balance: 0,
-                  total_earnings: 0
-              });
+          // B. Create Empty Wallet (Safety Step)
+          // We do this BEFORE sync. If sync fails (e.g. timeout), the user 
+          // still appears in your list because the wallet exists.
+          if (auth.merchantId) {
+              const { error: wError } = await supabase
+                  .from('merchant_wallets')
+                  .insert({
+                      user_id: newUser.id,
+                      merchant_id: auth.merchantId,
+                      current_balance: 0,
+                      total_earnings: 0
+                  });
+              
+              // Ignore duplicate key error (if wallet already exists)
+              if (wError && wError.code !== '23505') throw wError;
+          }
 
-          // Ignore wallet error if it already exists (e.g. 23505 duplicate key)
-          if (wError && wError.code !== '23505') throw wError;
+          // C. Trigger The "Onboard" Webhook
+          // This pulls history, calculates points, and updates the wallet real-time.
+          // Note: We use the relative path assuming the function is hosted at /api/webhook
+          await axios.post('/api/webhook', { phone });
 
-          await fetchUsers();
+          await fetchUsers(); // Refresh the list to show new balance
           return { success: true };
 
       } catch (err: any) {
-          return { success: false, error: err.message };
+          console.error("Import failed:", err);
+          // Return success: false but pass the error message
+          return { success: false, error: err.response?.data?.error || err.message };
       } finally {
           isSubmitting.value = false;
       }
@@ -218,12 +232,13 @@ export function useUserList() {
     fetchUsers();
   });
 
+
   return { 
       users, 
       loading, 
       isSubmitting,
       fetchUsers, 
       adjustBalance, 
-      createTestUser 
+      importUser 
   };
 }

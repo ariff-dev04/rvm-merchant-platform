@@ -40,15 +40,27 @@ export async function getNearbyRVMs(latitude: number = 3.14, longitude: number =
   }
 }
 
-// ✅ 4. Sync User / Get User Info
-// Used to get the user's "Lifetime Points" (integral) directly from the machine network
-export async function syncUserAccount(phone: string): Promise<any> {
+// 4. Sync User / Get User Info
+// Improved to handle both "Fetching" (just phone) and "Updating" (phone + data)
+export async function syncUserAccount(
+  phone: string, 
+  details?: { nikeName?: string; avatarUrl?: string }
+): Promise<any> {
   try {
-    const res = await callApi<any>('/api/open/v1/user/account/sync', 'POST', { 
-        phone,
-        nikeName: "", // The API actually requires this typo 'nikeName'
-        avatarUrl: ""
-    });
+    // 1. Construct the base payload (always required)
+    const payload: any = { phone };
+
+    // 2. Only add optional fields if they exist. 
+    // This prevents overwriting existing data with empty strings.
+    if (details?.nikeName) {
+      payload.nikeName = details.nikeName; // Note: API uses typo 'nikeName'
+    }
+    
+    if (details?.avatarUrl) {
+      payload.avatarUrl = details.avatarUrl;
+    }
+
+    const res = await callApi<any>('/api/open/v1/user/account/sync', 'POST', payload);
     
     // We return res.data directly so components can access .integral immediately
     if (res && res.code === 200 && res.data) {
@@ -62,7 +74,7 @@ export async function syncUserAccount(phone: string): Promise<any> {
   }
 }
 
-// ✅ 5. Get Individual Machine Status
+// 5. Get Individual Machine Status
 // Used by the Store to check status one-by-one (Sequential Fetch)
 export async function getMachineConfig(deviceNo: string): Promise<any> {
   try {

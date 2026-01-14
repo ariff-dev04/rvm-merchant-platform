@@ -59,24 +59,34 @@ onMounted(() => fetchReviews());
       </div>
 
       <div class="flex gap-3">
-        <button 
-          @click="showCleanupModal = true"
-          class="flex items-center px-4 py-2 border border-red-200 text-red-700 bg-red-50 rounded-lg hover:bg-red-100 transition-all active:scale-95"
-          title="Delete old verified data"
-        >
-          <Trash2 :size="18" class="mr-2" />
-          Cleanup
-        </button>
+      <button 
+        @click="showCleanupModal = true"
+        class="flex items-center px-4 py-2 border border-red-200 text-red-700 bg-red-50 rounded-lg hover:bg-red-100 transition-all active:scale-95"
+        title="Delete old verified data"
+      >
+        <Trash2 :size="18" class="mr-2" />
+        Cleanup
+      </button>
 
-        <button 
-          @click="harvestNewSubmissions" 
-          :disabled="isHarvesting" 
-          class="flex items-center px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-all"
-        >
-          <RefreshCw :size="18" :class="{'animate-spin': isHarvesting, 'mr-2': true}" />
-          {{ isHarvesting ? 'Syncing...' : 'Fetch & Verify' }}
-        </button>
-      </div>
+      <button 
+        @click="() => harvestNewSubmissions(false)" 
+        :disabled="isHarvesting" 
+        class="flex items-center px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-all"
+      >
+        <RefreshCw :size="18" :class="{'animate-spin': isHarvesting, 'mr-2': true}" />
+        {{ isHarvesting ? 'Syncing...' : 'Fetch & Verify' }}
+      </button>
+
+      <button 
+        @click="() => harvestNewSubmissions(true)" 
+        :disabled="isHarvesting" 
+        class="flex items-center px-4 py-2 border border-amber-200 text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50 transition-all"
+        title="Force check all users ignoring 2 min timer"
+      >
+        <RefreshCw :size="18" :class="{'animate-spin': isHarvesting, 'mr-2': true}" />
+        Force Sync
+      </button>
+    </div>
     </div>
 
     <SubmissionFilters @update:filters="(val) => searchFilters = val" />

@@ -48,19 +48,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .select('id').eq('user_id', user.id).eq('transaction_type', 'MIGRATION_ADJUSTMENT').maybeSingle();
     if (existing) return res.status(200).json({ msg: "Already onboarded", debugLog });
 
-    // 3. Vendor Data
-    // LOGIC FIX: Use existing nickname if available, otherwise default to 'User'
-    const nameToSync = (user.nickname && user.nickname !== 'New User') ? user.nickname : 'User';
-    const avatarToSync = user.avatar_url || '';
+    // 3. Vendor Data (IMPROVED)
+    // We construct the payload dynamically.
+    // If we have a GOOD name locally, we send it to update the vendor.
+    // If we don't, we send ONLY the phone so the vendor returns the existing remote profile (without overwriting it).
+    
+    const payload: any = { phone };
 
-    const profile = await callAutoGCM('/api/open/v1/user/account/sync', 'POST', { 
-        phone, 
-        nikeName: nameToSync, // Send the CORRECT name
-        avatarUrl: avatarToSync 
-    });
+    // Only sync nickname if it's a real name (not "New User" or empty)
+    if (user.nickname && user.nickname !== 'New User') {
+        payload.nikeName = user.nickname;
+    }
 
-    if (!profile || !profile.data) return res.status(502).json({ error: "Vendor API Failed" });
-    const livePoints = Number(profile?.data?.integral || 0);
+    // Only sync avatar if we actually have one
+    if (user.avatar_url) {
+        payload.avatarUrl = user.avatar_url;
+    }
+
+    // This call is now safe: 
+    // - If we have no name, it sends { phone } -> Returns remote info safe & sound.
+    // - If we have a name, it sends { phone, nikeName } -> Updates remote info.
+    const profile = await callAutoGCM('/api/open/v1/user/account/sync', 'POST', payload);
 
     // 4. Fetch History
     let historyList: any[] = [];
