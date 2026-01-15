@@ -71,27 +71,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ⚠️ CRITICAL FIX: Define livePoints here so the rest of the file can use it!
     const livePoints = Number(profile?.data?.integral || 0);
 
-    // 4. Fetch History
+    // 4. Fetch History (ROBUST VERSION)
     let historyList: any[] = [];
     let pageNum = 1;
     const pageSize = 100;
     let hasNext = true;
+    
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     
     log(`📡 Fetching history for ${phone}...`);
     
-    while (hasNext) {
-        const res = await callAutoGCM('/api/open/v1/put', 'GET', { 
-            phone, pageNum, pageSize, startTime: '2020-01-01', endTime: todayStr
-        });
+    // Safety: Limit to 50 pages (5000 records) to prevent timeouts
+    while (hasNext && pageNum <= 50) {
+        
+        // 1. Add small delay to avoid rate-limiting (200ms)
+        if (pageNum > 1) await new Promise(r => setTimeout(r, 200));
+
+        let res = null;
+        let attempt = 0;
+
+        // 2. Retry Mechanism (Try 3 times if API fails)
+        while (attempt < 3 && !res) {
+            try {
+                res = await callAutoGCM('/api/open/v1/put', 'GET', { 
+                    phone, pageNum, pageSize, startTime: '2020-01-01', endTime: todayStr
+                });
+            } catch (e) {
+                console.warn(`⚠️ Page ${pageNum} failed (Attempt ${attempt+1}). Retrying...`);
+                await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
+            }
+            attempt++;
+        }
+
         const list = res?.data?.list || [];
+        const totalItems = res?.data?.total || 0;
+
         if (list.length > 0) {
             historyList = [...historyList, ...list];
-            const total = res?.data?.total || 0;
-            if (historyList.length >= total || list.length < pageSize) hasNext = false;
-            else pageNum++;
+            log(`   -> Page ${pageNum}: Fetched ${list.length} records. Total so far: ${historyList.length}`);
+
+            // 3. Check if we are done
+            // If we have fetched everything (historyList >= totalItems) 
+            // OR the current page is not full (list < pageSize), then we are done.
+            if (historyList.length >= totalItems || list.length < pageSize) {
+                hasNext = false;
+            } else {
+                pageNum++;
+            }
         } else {
+            // No data returned implies end of list (or persistent failure)
+            if (!res) console.error(`❌ Failed to fetch Page ${pageNum} after 3 attempts.`);
             hasNext = false;
         }
     }
