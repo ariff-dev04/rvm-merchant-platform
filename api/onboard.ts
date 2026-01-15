@@ -156,7 +156,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- FIX END ---
 
     // 6. PROCESS LOOP
-    for (const record of historyList) {
+    // 🟢 CHANGE: Use .entries() to get the index for the incremental save check
+    for (const [index, record] of historyList.entries()) {
         const recordValue = Number(Number(record.integral || 0).toFixed(2));
         const recordWeight = Number(Number(record.totalWeight || record.weight || 0).toFixed(2));
         
@@ -207,9 +208,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .eq('user_id', user.id)
             .maybeSingle();
 
+        let error = null;
+
         if (existingRecord) {
              if (existingRecord.status === 'PENDING') {
-                await supabase.from('submission_reviews').update({
+                const { error: uErr } = await supabase.from('submission_reviews').update({
                     status: 'VERIFIED',
                     source: 'MIGRATION',
                     calculated_value: recordValue,
@@ -220,17 +223,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     photo_url: photoUrl,
                     phone: recordPhone,
                     rate_per_kg: ratePerKg,
-                    merchant_id: correctMerchantId // ✅ Use Correct Merchant
+                    merchant_id: correctMerchantId // Use Correct Merchant
                 }).eq('id', existingRecord.id);
+                error = uErr;
                 
-                totalImportedValue = Number((totalImportedValue + recordValue).toFixed(2));
-                totalImportedWeight = Number((totalImportedWeight + recordWeight).toFixed(2));
+                if (!uErr) {
+                    totalImportedValue = Number((totalImportedValue + recordValue).toFixed(2));
+                    totalImportedWeight = Number((totalImportedWeight + recordWeight).toFixed(2));
+                }
             } else {
+                // If already verified, we still count it towards the total
                 totalImportedValue = Number((totalImportedValue + recordValue).toFixed(2));
                 totalImportedWeight = Number((totalImportedWeight + recordWeight).toFixed(2));
             }
         } else {
-            const { error: insertError } = await supabase.from('submission_reviews').insert({
+            const { error: iErr } = await supabase.from('submission_reviews').insert({
                 user_id: user.id, 
                 merchant_id: correctMerchantId, // Use Correct Merchant
                 vendor_record_id: putId,
@@ -247,15 +254,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 phone: recordPhone,
                 rate_per_kg: ratePerKg
             });
+            error = iErr;
 
-            if (insertError) {
-                debugLog.push({ error: "Insert Failed", id: putId, msg: insertError.message });
+            if (iErr) {
+                debugLog.push({ error: "Insert Failed", id: putId, msg: iErr.message });
             } else {
                 totalImportedValue = Number((totalImportedValue + recordValue).toFixed(2));
                 totalImportedWeight = Number((totalImportedWeight + recordWeight).toFixed(2));
             }
         }
-    }
+
+        // ==================================================================================
+        // 🔥 INCREMENTAL SAVE SECTION (Prevent Data Loss on Timeout)
+        // ==================================================================================
+        // Save progress every 20 records (or whatever batch size works best for you)
+        if (index % 20 === 0) {
+            
+            // 1. Update User Global Total Weight
+            await supabase.from('users').update({
+                total_weight: totalImportedWeight,
+                // We update lifetime integral too, but remember this is partial until finished
+                lifetime_integral: totalImportedValue 
+            }).eq('id', user.id);
+
+            // 2. Update the Wallet for the Current Merchant being processed
+            // This ensures the merchant dashboard sees the updates live
+            const currentStats = merchantStats.get(correctMerchantId);
+            if (currentStats) {
+                await supabase.from('merchant_wallets').upsert({
+                    user_id: user.id,
+                    merchant_id: correctMerchantId,
+                    current_balance: Number(currentStats.earnings.toFixed(2)), 
+                    total_earnings: Number(currentStats.earnings.toFixed(2)),
+                    total_weight: Number(currentStats.weight.toFixed(2))
+                }, { onConflict: 'user_id, merchant_id' });
+            }
+        }
 
     // --- E. ADJUSTMENT & SAVE ---
     
