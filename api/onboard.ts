@@ -4,11 +4,9 @@ import axios from 'axios';
 import crypto from 'crypto';
 
 // 🟢 CONFIGURATION
-const supabaseUrl = process.env.VITE_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY!; 
-const SECRET = process.env.VITE_API_SECRET!;        
-const MERCHANT_NO = process.env.VITE_MERCHANT_NO!;
+// NOTE: We do NOT read process.env here. We only define static strings.
 const API_BASE = "https://api.autogcm.com";
+
 // Helper to silence logs in production
 const log = (...args: any[]) => {
   if (process.env.NODE_ENV !== 'production') {
@@ -16,11 +14,8 @@ const log = (...args: any[]) => {
   }
 };
 
-const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: { autoRefreshToken: false, persistSession: false }
-});
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // 1. CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -28,16 +23,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
+  // 🛡️ FIX 1: Load Environment Variables INSIDE the handler
+  // This prevents the "Cannot read properties of undefined" crash
+  const supabaseUrl = process.env.VITE_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  const SECRET = process.env.VITE_API_SECRET;
+  const MERCHANT_NO = process.env.VITE_MERCHANT_NO;
+
+  if (!supabaseUrl || !supabaseServiceKey || !SECRET || !MERCHANT_NO) {
+    console.error("❌ CRITICAL: Missing Environment Variables");
+    return res.status(500).json({ error: "Server Configuration Error: Missing Secrets" });
+  }
+
+  // 🛡️ FIX 2: Initialize Supabase INSIDE the handler
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false }
+  });
+
+  // Helper inside handler to access verified secrets
+  async function callAutoGCM(endpoint: string, method: string, data: any) {
+    const timestamp = Date.now().toString();
+    const sign = crypto.createHash('md5').update(MERCHANT_NO! + SECRET! + timestamp).digest('hex');
+    try {
+        const res = await axios({
+            url: API_BASE + endpoint, 
+            method: method,
+            headers: { "merchant-no": MERCHANT_NO, "timestamp": timestamp, "sign": sign, "Content-Type": "application/json" },
+            [method === 'GET' ? 'params' : 'data']: data
+        });
+        return res.data;
+    } catch (e: any) { return null; }
+  }
+
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: 'Phone is required' });
 
-  const debugLog: any[] = []; 
+  const debugLog: any[] = [];
 
   try {
     // 1. Get User (ADD nickname to selection)
     const { data: user } = await supabase
         .from('users')
-        .select('id, phone, nickname, avatar_url') // ✅ Fetch existing profile
+        .select('id, phone, nickname, avatar_url') // Fetch existing profile
         .eq('phone', phone)
         .single();
 
@@ -65,26 +92,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Call the API
     const profile = await callAutoGCM('/api/open/v1/user/account/sync', 'POST', payload);
     
-    // ⚠️ CRITICAL FIX: Define livePoints here so the rest of the file can use it!
+    //  CRITICAL FIX: Define livePoints here so the rest of the file can use it!
     const livePoints = Number(profile?.data?.integral || 0);
 
-    // 4. Fetch History (Fixed for 50-record Limit)
+    // 4. Fetch History (Optimized for High Volume)
     let historyList: any[] = [];
     let pageNum = 1;
-    
-    // 🟢 CHANGE: Request 50 instead of 100 to match the server's likely limit
     const pageSize = 50; 
-    
     let hasNext = true;
+    
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     
     log(`📡 Fetching history for ${phone}...`);
+
+    // 🔥 TIMEOUT PROTECTION: Track start time to prevent 502 Errors
+    const startTime = Date.now();
     
-    while (hasNext && pageNum <= 50) { // Safety Cap at 50 pages
+    // 🟢 OPTIMIZATION: Increased limit to 200 pages (10,000 records)
+    while (hasNext && pageNum <= 200) { 
         
-        // Anti-rate-limit delay
-        if (pageNum > 1) await new Promise(r => setTimeout(r, 200));
+        // Safety: If running longer than 8 seconds, stop fetching to save what we have.
+        // (Vercel Functions timeout at 10s, this leaves 2s to save data)
+        if (Date.now() - startTime > 8000) {
+            console.warn("⚠️ Time limit reached. Stopping fetch to ensure data saving.");
+            debugLog.push({ warning: "Time limit reached, partial fetch", pages: pageNum });
+            break;
+        }
+
+        // 🟢 OPTIMIZATION: Reduced delay to 50ms (Faster fetching)
+        if (pageNum > 1) await new Promise(r => setTimeout(r, 50));
 
         const res = await callAutoGCM('/api/open/v1/put', 'GET', { 
             phone, pageNum, pageSize, startTime: '2020-01-01', endTime: todayStr
@@ -97,8 +134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             historyList = [...historyList, ...list];
             log(`   -> Page ${pageNum}: Fetched ${list.length}. Total: ${historyList.length}/${totalItems}`);
 
-            // 🟢 ROBUST LOGIC:
-            // Only stop if we have collected ALL items reported by 'total'
+            // Stop if we have collected ALL items reported by 'total'
             if (historyList.length >= totalItems) {
                 hasNext = false;
             } else {
@@ -294,6 +330,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 }, { onConflict: 'user_id, merchant_id' });
             }
         }
+    }
 
     // --- E. ADJUSTMENT & SAVE ---
     
@@ -391,16 +428,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// Helper
-async function callAutoGCM(endpoint: string, method: string, data: any) {
-    const timestamp = Date.now().toString();
-    const sign = crypto.createHash('md5').update(MERCHANT_NO + SECRET + timestamp).digest('hex');
-    try {
-        const res = await axios({
-            url: API_BASE + endpoint, method: method,
-            headers: { "merchant-no": MERCHANT_NO, "timestamp": timestamp, "sign": sign, "Content-Type": "application/json" },
-            [method === 'GET' ? 'params' : 'data']: data
-        });
-        return res.data;
-    } catch (e: any) { return null; }
-}
+
