@@ -109,9 +109,9 @@ const handleImageError = (e: Event) => {
     </div>
 
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div class="px-8 py-6 border-b border-gray-100 bg-gray-50/50">
-            <h2 class="text-lg font-bold text-gray-900">User Database</h2>
-            <p class="text-sm text-gray-500 mt-1">Synced users with wallet balances.</p>
+        <div class="px-8 py-6 border-b border-gray-100 bg-gray-50">
+            <h2 class="text-lg font-bold text-gray-900">Users Overview</h2>
+            <p class="text-sm text-gray-500 mt-1">Manage synced users and their wallet balances.</p>
         </div>
 
         <div v-if="loading" class="p-8 text-center text-gray-500">Loading users...</div>
